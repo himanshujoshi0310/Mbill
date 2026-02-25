@@ -1,0 +1,876 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import LogoutButton from '@/components/LogoutButton'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Plus, Edit, Trash2, Search, ShoppingCart, TrendingUp, Package, CreditCard, FileText, Settings } from 'lucide-react'
+import DashboardLayout from '@/app/components/DashboardLayout'
+
+interface Product {
+  id: string
+  name: string
+  unit?: {
+    symbol: string
+  }
+}
+
+interface Party {
+  id: string
+  name: string
+  address: string
+  phone1: string
+  phone2: string
+  type: string
+}
+
+interface SalesItem {
+  id: string
+  productId: string
+  weight: number
+  bags: number
+  rate: number
+  amount: number
+  discount: number
+}
+
+export default function SalesEntryPage() {
+  const router = useRouter()
+  const [products, setProducts] = useState<Product[]>([])
+  const [parties, setParties] = useState<Party[]>([])
+  const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState(1)
+
+  // Party search state (keep for compatibility but will be removed)
+  const [partySearchTerm, setPartySearchTerm] = useState('')
+  const [filteredParties, setFilteredParties] = useState<Party[]>([])
+  const [showPartyDropdown, setShowPartyDropdown] = useState(false)
+
+  // Transport search state
+  const [transportSearchTerm, setTransportSearchTerm] = useState('')
+  const [transports, setTransports] = useState<any[]>([])
+  const [filteredTransports, setFilteredTransports] = useState<any[]>([])
+  const [showTransportDropdown, setShowTransportDropdown] = useState(false)
+
+  // Sales Items state
+  const [salesItems, setSalesItems] = useState<any[]>([])
+  const [currentFormItems, setCurrentFormItems] = useState<SalesItem[]>([])
+
+  // Invoice Tab 1 - Basic Info
+  const [invoiceNo, setInvoiceNo] = useState('')
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0])
+  const [selectedParty, setSelectedParty] = useState('')
+  const [partyName, setPartyName] = useState('') // For display only
+  const [partyAddress, setPartyAddress] = useState('')
+  const [partyContact, setPartyContact] = useState('')
+
+  // Invoice Tab 2 - Transport Info
+  const [transportName, setTransportName] = useState('')
+  const [lorryNo, setLorryNo] = useState('')
+  const [freightPerQt, setFreightPerQt] = useState('')
+  const [freightAmount, setFreightAmount] = useState('')
+  const [advance, setAdvance] = useState('')
+  const [toPay, setToPay] = useState('')
+
+  // Invoice Tab 3 - Items
+  const [currentItem, setCurrentItem] = useState({
+    salesItemId: '',
+    noOfBags: '',
+    weightPerBag: '',
+    rate: ''
+  })
+
+  // Invoice Tab 4 - Totals
+  const [totalProductItemQty, setTotalProductItemQty] = useState(0)
+  const [totalNoOfBags, setTotalNoOfBags] = useState(0)
+  const [totalWeight, setTotalWeight] = useState(0)
+  const [totalAmount, setTotalAmount] = useState(0)
+
+  useEffect(() => {
+    fetchData()
+  }, [])
+
+  useEffect(() => {
+    // Calculate to pay when freight amount or advance changes
+    const freight = parseFloat(freightAmount) || 0
+    const adv = parseFloat(advance) || 0
+    setToPay((freight - adv).toString())
+  }, [freightAmount, advance])
+
+  // Filter transports based on search term
+  useEffect(() => {
+    if (transportSearchTerm) {
+      const filtered = transports.filter(transport =>
+        transport.transporterName && transport.transporterName.toLowerCase().includes(transportSearchTerm.toLowerCase())
+      )
+      setFilteredTransports(filtered)
+    } else {
+      setFilteredTransports(transports)
+    }
+  }, [transportSearchTerm, transports])
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      if (!target.closest('.search-dropdown-container')) {
+        setShowPartyDropdown(false)
+        setShowTransportDropdown(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  // Handle party selection with auto-fetch
+  const handlePartySelect = (partyId: string) => {
+    setSelectedParty(partyId)
+    const party = parties.find(p => p.id === partyId)
+    if (party) {
+      setPartyName(party.name) // For display only
+      setPartyAddress(party.address || '')
+      setPartyContact(party.phone1 || '')
+      setPartySearchTerm(party.name)
+    } else {
+      setPartyName('')
+      setPartyAddress('')
+      setPartyContact('')
+      setPartySearchTerm('')
+    }
+  }
+
+  // Handle new party addition
+  const handleAddNewParty = async () => {
+    if (!partyName) {
+      alert('Please enter party name')
+      return
+    }
+
+    try {
+      const urlParams = new URLSearchParams(window.location.search)
+      const companyId = urlParams.get('companyId')
+
+      if (!companyId) {
+        alert('Company ID not found. Please refresh the page.')
+        return
+      }
+
+      const response = await fetch(`/api/parties?companyId=${companyId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          type: 'buyer', // Default to buyer type for sales
+          name: partyName,
+          address: partyAddress,
+          phone1: partyContact,
+        }),
+      })
+
+      if (response.ok) {
+        const newParty = await response.json()
+        setParties([...parties, newParty])
+        setSelectedParty(newParty.id)
+        alert('Party added successfully!')
+      } else {
+        const error = await response.json()
+        alert('Error adding party: ' + (error.error || 'Unknown error'))
+      }
+    } catch (error) {
+      console.error('Error:', error)
+      alert('Error adding party: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    }
+  }
+
+  const handleTransportSearch = (term: string) => {
+    setTransportSearchTerm(term)
+    setShowTransportDropdown(true)
+  }
+
+  const handleTransportSelect = (transport: any) => {
+    setTransportName(transport.id)
+    setTransportSearchTerm(transport.transporterName || '')
+    setLorryNo(transport.vehicleNumber || '')
+    setShowTransportDropdown(false)
+  }
+
+  const handleAddNewTransport = () => {
+    const urlParams = new URLSearchParams(window.location.search)
+    const companyId = urlParams.get('companyId')
+    router.push(`/master/transport?companyId=${companyId}`)
+  }
+
+  const handleAddNewSalesItem = () => {
+    const urlParams = new URLSearchParams(window.location.search)
+    const companyId = urlParams.get('companyId')
+    router.push(`/master/sales-item?companyId=${companyId}`)
+  }
+
+  const fetchData = async () => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search)
+      const companyId = urlParams.get('companyId')
+
+      if (!companyId) {
+        alert('Company not selected')
+        router.push('/company/select')
+        return
+      }
+
+      // Fetch products, parties, transports, and sales items
+      const [productsRes, partiesRes, transportsRes, salesItemsRes] = await Promise.all([
+        fetch(`/api/products?companyId=${companyId}`),
+        fetch(`/api/parties?companyId=${companyId}`),
+        fetch(`/api/transports?companyId=${companyId}`),
+        fetch(`/api/sales-item-masters?companyId=${companyId}`)
+      ])
+
+      const productsData = await productsRes.json()
+      const partiesData = await partiesRes.json()
+      const transportsData = await transportsRes.json()
+      const salesItemsData = await salesItemsRes.json()
+
+      setProducts(productsData)
+      setParties(partiesData)
+      setFilteredParties(partiesData) // Initialize filtered parties
+      setTransports(transportsData)
+      setFilteredTransports(transportsData)
+      setSalesItems(salesItemsData)
+
+      // Generate next invoice number
+      const billsRes = await fetch(`/api/sales-bills?companyId=${companyId}&last=true`)
+      const billsData = await billsRes.json()
+      const lastBillNum = billsData.lastBillNumber || 0
+      const nextInvoiceNumber = lastBillNum === 0 ? 1 : lastBillNum + 1
+      setInvoiceNo(nextInvoiceNumber.toString())
+      
+      console.log(`Invoice generation: Last bill: ${lastBillNum}, Next invoice: ${nextInvoiceNumber}`)
+
+      setLoading(false)
+    } catch (error) {
+      console.error('Error fetching data:', error)
+      setLoading(false)
+    }
+  }
+
+  const calculateItemTotals = () => {
+    const noOfBags = parseFloat(currentItem.noOfBags) || 0
+    const weightPerBag = parseFloat(currentItem.weightPerBag) || 0
+    const rate = parseFloat(currentItem.rate) || 0
+    
+    // Mandi calculations: Weight in kg, then convert to Qt (100kg = 1Qt)
+    const totalWeightKg = noOfBags * weightPerBag
+    const totalWeightQt = totalWeightKg / 100 // Convert kg to Qt
+    const amount = totalWeightQt * rate // Amount = Qt × Rate
+    
+    return { totalWeight: totalWeightQt, amount }
+  }
+
+  const handleAddItem = () => {
+    if (!currentItem.salesItemId || !currentItem.noOfBags || !currentItem.weightPerBag || !currentItem.rate) {
+      alert('Please fill all item fields')
+      return
+    }
+
+    const salesItem = salesItems.find(s => s.id === currentItem.salesItemId)
+    const { totalWeight, amount } = calculateItemTotals()
+
+    console.log('=== ADDING SALES ITEM DEBUG ===')
+    console.log('SELECTED SALES ITEM ID:', currentItem.salesItemId)
+    console.log('FOUND SALES ITEM:', salesItem)
+    console.log('SALES ITEM PRODUCT ID:', salesItem?.productId)
+    console.log('TOTAL WEIGHT:', totalWeight)
+    console.log('AMOUNT:', amount)
+
+    const newItem: SalesItem = {
+      id: Date.now().toString(),
+      productId: salesItem?.productId || currentItem.salesItemId, // Use the actual productId from sales item
+      weight: totalWeight || 0,
+      bags: parseFloat(currentItem.noOfBags) || 0,
+      rate: parseFloat(currentItem.rate) || 0,
+      amount: amount || 0,
+      discount: 0 // Default discount to 0
+    }
+
+    console.log('NEW ITEM CREATED:', newItem)
+    console.log('==========================')
+
+    // Validate that we have a real product ID (not temp)
+    if (newItem.productId.startsWith('temp_')) {
+      alert('Invalid product selection. Please select a valid sales item from the dropdown.')
+      return
+    }
+
+    setCurrentFormItems([...currentFormItems, newItem])
+    updateTotals([...currentFormItems, newItem])
+
+    // Reset current item
+    setCurrentItem({
+      salesItemId: '',
+      noOfBags: '',
+      weightPerBag: '',
+      rate: ''
+    })
+  }
+
+  const updateTotals = (items: SalesItem[]) => {
+    const totalQty = items.length
+    const totalBags = items.reduce((sum, item) => sum + (item.bags || 0), 0)
+    const totalWeight = items.reduce((sum, item) => sum + (item.weight || 0), 0)
+    const totalAmt = items.reduce((sum, item) => sum + (item.amount || 0), 0)
+
+    setTotalProductItemQty(totalQty)
+    setTotalNoOfBags(totalBags)
+    setTotalWeight(totalWeight)
+    setTotalAmount(totalAmt)
+  }
+
+  const handleUpdateItem = (id: string) => {
+    // For now, just remove and re-add
+    const updatedItems = currentFormItems.filter(item => item.id !== id)
+    setCurrentFormItems(updatedItems)
+    updateTotals(updatedItems)
+  }
+
+  const handleRemoveItem = (id: string) => {
+    const updatedItems = currentFormItems.filter(item => item.id !== id)
+    setCurrentFormItems(updatedItems)
+    updateTotals(updatedItems)
+  }
+
+  const handleClearItems = () => {
+    setCurrentFormItems([])
+    updateTotals([])
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    // Comprehensive validation
+    if (!selectedParty) {
+      alert('Party selection is required')
+      return
+    }
+    
+    if (!invoiceDate) {
+      alert('Invoice date is required')
+      return
+    }
+    
+    if (currentFormItems.length === 0) {
+      alert('At least one sales item is required')
+      return
+    }
+    
+    // Validate each item
+    for (const item of currentFormItems) {
+      if (item.bags <= 0) {
+        alert('Number of bags must be greater than 0')
+        return
+      }
+      if (item.weight <= 0) {
+        alert('Weight must be greater than 0')
+        return
+      }
+      if (item.rate <= 0) {
+        alert('Rate must be greater than 0')
+        return
+      }
+    }
+    
+    if (parseFloat(toPay) < 0) {
+      alert('TO Pay cannot be negative')
+      return
+    }
+
+    try {
+      const urlParams = new URLSearchParams(window.location.search)
+      const firmId = urlParams.get('companyId') // Using companyId as firmId for now
+
+      // Validate required fields
+      if (!firmId) {
+        alert('Firm ID is missing')
+        return
+      }
+
+      // Prepare sales invoice items data
+      const salesInvoiceItems = currentFormItems.map(item => ({
+        productId: item.productId,
+        weight: item.weight,
+        bags: item.bags,
+        rate: item.rate,
+        amount: item.amount
+      }))
+
+      // Sales Bill data (core fields only)
+      const salesBillData = {
+        companyId: firmId,
+        billNo: invoiceNo,
+        billDate: invoiceDate, // Fixed: use billDate instead of invoiceDate
+        partyId: selectedParty,
+        totalAmount,
+        receivedAmount: 0, // Default to 0, can be updated later
+        balanceAmount: totalAmount, // Initially full amount is balance
+        status: 'unpaid' // Default status
+      }
+
+      // Transport Bill data (separate)
+      const transportBillData = {
+        transportName,
+        lorryNo,
+        freightPerQt: parseFloat(freightPerQt) || 0,
+        freightAmount: parseFloat(freightAmount) || 0,
+        advance: parseFloat(advance) || 0,
+        toPay: parseFloat(toPay) || 0
+      }
+
+      const requestData = {
+        salesBill: salesBillData,
+        transportBill: transportBillData,
+        salesItems: salesInvoiceItems
+      }
+
+      console.log('=== SALES ENTRY DEBUG ===')
+      console.log('Company ID:', companyId)
+      console.log('Party Name:', partyName)
+      console.log('Current Form Items:', currentFormItems)
+      console.log('Total Amount:', totalAmount)
+      console.log('Request Data:', JSON.stringify(requestData, null, 2))
+      console.log('========================')
+
+      const response = await fetch('/api/sales-invoices', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData),
+      })
+
+      console.log('Response Status:', response.status)
+      console.log('Response OK:', response.ok)
+      console.log('Response Headers:', response.headers)
+
+      // Get response as text first to see raw content
+      const responseText = await response.text()
+      console.log('Raw Response Text:', responseText)
+
+      if (response.ok) {
+        alert('Sales bill created successfully!')
+        router.push('/sales/list?companyId=' + companyId)
+      } else {
+        let errorData
+        try {
+          errorData = JSON.parse(responseText)
+        } catch (parseError) {
+          console.error('Failed to parse error response:', parseError)
+          console.error('Response text that failed to parse:', responseText)
+          errorData = { error: 'Failed to parse error response', details: responseText, statusText: response.statusText }
+        }
+        
+        console.error('API Error Response:', errorData)
+        console.error('Response Status Text:', response.statusText)
+        console.error('Response Status:', response.status)
+        
+        alert('Error creating sales bill: ' + (errorData.error || 'Unknown error'))
+      }
+    } catch (error) {
+      console.error('Error:', error)
+      alert('Error creating sales bill')
+    }
+  }
+
+  if (loading) {
+    return (
+      <DashboardLayout companyId="">
+        <div className="flex justify-center items-center h-screen">Loading...</div>
+      </DashboardLayout>
+    )
+  }
+
+  const urlParams = new URLSearchParams(window.location.search)
+  const companyId = urlParams.get('companyId') || ''
+
+  return (
+    <DashboardLayout companyId={companyId}>
+      <LogoutButton />
+      <div className="p-6">
+        <div className="max-w-6xl mx-auto">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-2xl font-bold">Sales Entry</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSubmit}>
+                {/* Section 1 - Basic Info */}
+                <div className="mb-8">
+                  <h3 className="text-lg font-semibold mb-4 pb-2 border-b">1. Basic Info</h3>
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      <div>
+                        <Label htmlFor="invoiceNo">Invoice No. (Auto-generated)</Label>
+                        <Input 
+                          id="invoiceNo" 
+                          value={invoiceNo ? `SAL-${new Date().getFullYear()}-${invoiceNo.padStart(3, '0')}` : 'Loading...'} 
+                          readOnly 
+                          className="bg-gray-100 font-semibold" 
+                        />
+                        {invoiceNo && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            {parseInt(invoiceNo) === 1 
+                              ? `First invoice for this company` 
+                              : `Next invoice: SAL-${new Date().getFullYear()}-${invoiceNo.padStart(3, '0')}`
+                            }
+                          </p>
+                        )}
+                      </div>
+                      <div>
+                        <Label htmlFor="invoiceDate">Invoice Date</Label>
+                        <Input
+                          id="invoiceDate"
+                          type="date"
+                          value={invoiceDate}
+                          onChange={(e) => setInvoiceDate(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="party">Party</Label>
+                        <div className="flex gap-2">
+                          <Select value={selectedParty} onValueChange={handlePartySelect}>
+                            <SelectTrigger className="flex-1">
+                              <SelectValue placeholder="Select Party" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {parties.map((party) => (
+                                <SelectItem key={party.id} value={party.id}>
+                                  {party.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      <div>
+                        <Label htmlFor="partyName">Party Name</Label>
+                        <Input
+                          id="partyName"
+                          value={partyName}
+                          onChange={(e) => setPartyName(e.target.value)}
+                          placeholder="Enter party name"
+                          required
+                          disabled={selectedParty !== ''}
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="partyAddress">Party Address</Label>
+                        <Input
+                          id="partyAddress"
+                          value={partyAddress}
+                          onChange={(e) => setPartyAddress(e.target.value)}
+                          placeholder="Enter party address"
+                          disabled={selectedParty !== ''}
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="partyContact">Party Contact No.</Label>
+                        <Input
+                          id="partyContact"
+                          value={partyContact}
+                          onChange={(e) => setPartyContact(e.target.value)}
+                          placeholder="Enter party contact"
+                          disabled={selectedParty !== ''}
+                        />
+                      </div>
+
+                      {/* Add New Party Button */}
+                      {!selectedParty && partyName && (
+                        <div className="flex items-end">
+                          <Button type="button" variant="outline" onClick={handleAddNewParty}>
+                            Add Party
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 2 - Transport Info */}
+                <div className="mb-8">
+                  <h3 className="text-lg font-semibold mb-4 pb-2 border-b">2. Transport Info</h3>
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      <div>
+                        <Label htmlFor="transportName">Transport Name</Label>
+                        <div className="relative search-dropdown-container">
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <Input
+                                id="transportName"
+                                value={transportSearchTerm}
+                                onChange={(e) => handleTransportSearch(e.target.value)}
+                                onFocus={() => setShowTransportDropdown(true)}
+                                placeholder="Type to search transport..."
+                                className="pr-10"
+                              />
+                              <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={handleAddNewTransport}
+                              className="flex items-center gap-1"
+                            >
+                              <Plus className="h-4 w-4" />
+                              Add New
+                            </Button>
+                          </div>
+                          
+                          {showTransportDropdown && (
+                            <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                              {filteredTransports.length > 0 ? (
+                                filteredTransports.map((transport) => (
+                                  <div
+                                    key={transport.id}
+                                    className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                    onClick={() => handleTransportSelect(transport)}
+                                  >
+                                    <div className="font-medium">{transport.transporterName || 'No Name'}</div>
+                                    {transport.vehicleNumber && (
+                                      <div className="text-sm text-gray-500">Vehicle: {transport.vehicleNumber}</div>
+                                    )}
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="px-3 py-2 text-gray-500 text-sm">
+                                  No transports found. Click "Add New" to create one.
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <Label htmlFor="lorryNumber">Lorry Number</Label>
+                        <Input
+                          id="lorryNumber"
+                          value={lorryNo}
+                          onChange={(e) => setLorryNo(e.target.value)}
+                          placeholder="Enter lorry number"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="freightPerQt">Freight Per Qt.</Label>
+                        <Input
+                          id="freightPerQt"
+                          type="number"
+                          step="0.01"
+                          value={freightPerQt}
+                          onChange={(e) => setFreightPerQt(e.target.value)}
+                          placeholder="Enter freight per quantity"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="freightAmount">Freight Amount</Label>
+                        <Input
+                          id="freightAmount"
+                          type="number"
+                          step="0.01"
+                          value={freightAmount}
+                          onChange={(e) => setFreightAmount(e.target.value)}
+                          placeholder="Enter freight amount"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="advance">Advance</Label>
+                        <Input
+                          id="advance"
+                          type="number"
+                          step="0.01"
+                          value={advance}
+                          onChange={(e) => setAdvance(e.target.value)}
+                          placeholder="Enter advance amount"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="toPay">To Pay</Label>
+                        <Input
+                          id="toPay"
+                          value={toPay}
+                          readOnly
+                          className="bg-gray-100"
+                          placeholder="Calculated automatically"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 3 - Items */}
+                <div className="mb-0">
+                  <h3 className="text-lg font-semibold mb-4 pb-2 border-b">3. Items</h3>
+                  <div className="space-y-6">
+                    {/* Add Item Form */}
+                    <div className="border rounded-lg p-4">
+                      <h3 className="font-semibold mb-4">Add Item</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+                        <div className="lg:col-span-2">
+                          <Label htmlFor="itemProduct">Sales Items</Label>
+                          <Select value={currentItem.salesItemId} onValueChange={(value) => {
+                            setCurrentItem({ ...currentItem, salesItemId: value })
+                          }}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select Sales Item" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {salesItems.map((salesItem) => (
+                                <SelectItem key={salesItem.id} value={salesItem.id}>
+                                  {salesItem.salesItemName} ({salesItem.product?.name || 'No product'})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                        <div>
+                          <Label htmlFor="noOfBags">No. of Bags</Label>
+                          <Input
+                            id="noOfBags"
+                            type="number"
+                            value={currentItem.noOfBags}
+                            onChange={(e) => setCurrentItem({...currentItem, noOfBags: e.target.value})}
+                            placeholder="Enter bags"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="weightPerBag">Weight / Bag in Kg</Label>
+                          <Input
+                            id="weightPerBag"
+                            type="number"
+                            step="0.01"
+                            value={currentItem.weightPerBag}
+                            onChange={(e) => setCurrentItem({...currentItem, weightPerBag: e.target.value})}
+                            placeholder="Enter weight per bag"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="itemRate">Rate / Qt</Label>
+                          <Input
+                            id="itemRate"
+                            type="number"
+                            step="0.01"
+                            value={currentItem.rate}
+                            onChange={(e) => setCurrentItem({...currentItem, rate: e.target.value})}
+                            placeholder="Enter rate"
+                          />
+                        </div>
+                        <div>
+                          <Label>Total Weight (Qt.)</Label>
+                          <Input
+                            value={calculateItemTotals().totalWeight.toFixed(2)}
+                            readOnly
+                            className="bg-gray-100"
+                          />
+                        </div>
+                        <div>
+                          <Label>Amount</Label>
+                          <Input
+                            value={calculateItemTotals().amount.toFixed(2)}
+                            readOnly
+                            className="bg-gray-100"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex gap-2 mt-4">
+                        <Button type="button" onClick={handleAddItem}>Add</Button>
+                        <Button type="button" variant="outline" onClick={handleClearItems}>Clear</Button>
+                      </div>
+                    </div>
+
+                    {/* Items Table */}
+                    {currentFormItems.length > 0 && (
+                      <div className="border rounded-lg p-4">
+                        <h3 className="font-semibold mb-4">Added Items</h3>
+                        <div className="overflow-x-auto">
+                          <table className="w-full border-collapse">
+                            <thead>
+                              <tr className="border-b">
+                                <th className="text-left p-4">#</th>
+                                <th className="text-right p-2">Bags</th>
+                                <th className="text-right p-2">Weight (Qt.)</th>
+                                <th className="text-right p-2">Rate / Qt</th>
+                                <th className="text-right p-2">Amount</th>
+                                <th className="text-center p-2">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {currentFormItems.map((item, index) => (
+                                <tr key={item.id} className="border-b">
+                                  <td className="p-2">{index + 1}</td>
+                                  <td className="p-2 text-right">{item.bags || 0}</td>
+                                  <td className="p-2 text-right">{(item.weight || 0).toFixed(2)}</td>
+                                  <td className="p-2 text-right">{(item.rate || 0).toFixed(2)}</td>
+                                  <td className="p-2 text-right">{(item.amount || 0).toFixed(2)}</td>
+                                  <td className="p-2 text-center">
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleRemoveItem(item.id)}
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Section 4 - Totals */}
+                <div className="mt-0 -mt-4">
+                  <h3 className="text-lg font-semibold mb-2 pb-2 border-b">4. Totals</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    <div className="text-center p-2 bg-blue-50 rounded-lg border border-blue-200">
+                      <Label className="text-xs text-gray-600 block">Total Sales Item Qty</Label>
+                      <p className="text-lg font-bold text-blue-600">{totalProductItemQty}</p>
+                    </div>
+                    <div className="text-center p-2 bg-green-50 rounded-lg border border-green-200">
+                      <Label className="text-xs text-gray-600 block">Total No. of Bags</Label>
+                      <p className="text-lg font-bold text-green-600">{totalNoOfBags}</p>
+                    </div>
+                    <div className="text-center p-2 bg-yellow-50 rounded-lg border border-yellow-200">
+                      <Label className="text-xs text-gray-600 block">Total Weight (Qt.)</Label>
+                      <p className="text-lg font-bold text-yellow-600">{totalWeight.toFixed(2)}</p>
+                    </div>
+                    <div className="text-center p-2 bg-purple-50 rounded-lg border border-purple-200">
+                      <Label className="text-xs text-gray-600 block">Total Amount</Label>
+                      <p className="text-lg font-bold text-purple-600">₹{totalAmount.toFixed(2)}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Submit Buttons */}
+                <div className="flex justify-between items-center">
+                  <Button type="button" variant="outline" onClick={() => router.back()}>
+                    Cancel
+                  </Button>
+                  <Button type="submit">Save Sales Bill</Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </DashboardLayout>
+    )
+  }

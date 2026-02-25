@@ -1,0 +1,300 @@
+'use client'
+
+import { useState, useEffect, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import DashboardLayout from '@/app/components/DashboardLayout'
+import { ArrowLeft, Edit, Trash2, Printer, FileText } from 'lucide-react'
+
+interface SalesBill {
+  id: string
+  billNo: string
+  billDate: string
+  party: {
+    id: string
+    name: string
+    address: string
+    phone1: string
+  }
+  salesItems: Array<{
+    id: string
+    productId: string
+    product: {
+      id: string
+      name: string
+    }
+    qty: number
+    rate: number
+    amount: number
+  }>
+  totalAmount: number
+  receivedAmount: number
+  balanceAmount: number
+  status: string
+  createdAt: string
+  updatedAt: string
+}
+
+export default function SalesViewPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <SalesViewPageContent />
+    </Suspense>
+  )
+}
+
+function SalesViewPageContent() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const billId = searchParams.get('billId')
+  const companyId = searchParams.get('companyId')
+
+  const [salesBill, setSalesBill] = useState<SalesBill | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (billId && companyId) {
+      fetchSalesBill()
+    } else {
+      setLoading(false)
+      alert('Missing bill ID or company ID')
+      router.back()
+    }
+  }, [billId, companyId])
+
+  const fetchSalesBill = async () => {
+    try {
+      const response = await fetch(`/api/sales-bills?companyId=${companyId}&billId=${billId}`)
+      if (!response.ok) {
+        throw new Error('Sales bill not found')
+      }
+      const billData: SalesBill = await response.json()
+      setSalesBill(billData)
+      setLoading(false)
+    } catch (error) {
+      console.error('Error fetching sales bill:', error)
+      setLoading(false)
+      alert('Error loading sales bill')
+      router.back()
+    }
+  }
+
+  const handleEdit = () => {
+    router.push(`/sales/edit?billId=${billId}&companyId=${companyId}`)
+  }
+
+  const handleDelete = () => {
+    if (!salesBill) return
+
+    // Check if bill is within 15 days from today
+    const billDate = new Date(salesBill.billDate)
+    const currentDate = new Date()
+    const daysDifference = Math.floor((currentDate.getTime() - billDate.getTime()) / (1000 * 60 * 60 * 24))
+
+    if (daysDifference > 15) {
+      alert(`Cannot delete bill. Bill is older than 15 days. Bill age: ${daysDifference} days. Only bills within 15 days can be deleted.`)
+      return
+    }
+
+    if (confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
+      deleteBill()
+    }
+  }
+
+  const deleteBill = async () => {
+    try {
+      const response = await fetch(`/api/sales-bills?billId=${billId}&companyId=${companyId}`, {
+        method: 'DELETE'
+      })
+
+      if (response.ok) {
+        alert('Sales bill deleted successfully!')
+        router.push(`/sales/list?companyId=${companyId}`)
+      } else {
+        const errorData = await response.json()
+        alert('Error deleting sales bill: ' + (errorData.error || 'Unknown error'))
+      }
+    } catch (error) {
+      console.error('Error deleting sales bill:', error)
+      alert('Error deleting sales bill: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    }
+  }
+
+  const handlePrint = () => {
+    window.print()
+  }
+
+  const handleExportPDF = () => {
+    // TODO: Implement PDF export
+    alert('PDF export functionality coming soon!')
+  }
+
+  if (loading) {
+    return (
+      <DashboardLayout companyId={companyId || ''}>
+        <div className="flex justify-center items-center h-screen">Loading...</div>
+      </DashboardLayout>
+    )
+  }
+
+  if (!salesBill) {
+    return (
+      <DashboardLayout companyId={companyId || ''}>
+        <div className="flex justify-center items-center h-screen">
+          <div className="text-center">
+            <h2 className="text-xl font-semibold mb-2">Sales Bill Not Found</h2>
+            <Button onClick={() => router.back()}>Go Back</Button>
+          </div>
+        </div>
+      </DashboardLayout>
+    )
+  }
+
+  return (
+    <DashboardLayout companyId={companyId || ''}>
+      <div className="p-6">
+        <div className="max-w-4xl mx-auto">
+          {/* Header */}
+          <div className="flex justify-between items-center mb-6">
+            <div className="flex items-center gap-4">
+              <Button variant="outline" onClick={() => router.back()}>
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back
+              </Button>
+              <h1 className="text-3xl font-bold">Sales Bill Details</h1>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleEdit}>
+                <Edit className="w-4 h-4 mr-2" />
+                Edit
+              </Button>
+              <Button variant="outline" onClick={handleDelete}>
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete
+              </Button>
+              <Button variant="outline" onClick={handlePrint}>
+                <Printer className="w-4 h-4 mr-2" />
+                Print
+              </Button>
+              <Button variant="outline" onClick={handleExportPDF}>
+                <FileText className="w-4 h-4 mr-2" />
+                PDF
+              </Button>
+            </div>
+          </div>
+
+          {/* Bill Information */}
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Bill Information</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-sm text-gray-600">Invoice Number</p>
+                  <p className="font-semibold">{salesBill.billNo}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Invoice Date</p>
+                  <p className="font-semibold">{new Date(salesBill.billDate).toLocaleDateString()}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Status</p>
+                  <Badge variant={
+                    salesBill.status === 'paid' ? 'default' :
+                    salesBill.status === 'partial' ? 'secondary' : 'destructive'
+                  }>
+                    {salesBill.status}
+                  </Badge>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Created On</p>
+                  <p className="font-semibold">{new Date(salesBill.createdAt).toLocaleDateString()}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Party Information */}
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Party Information</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-sm text-gray-600">Party Name</p>
+                  <p className="font-semibold">{salesBill.party.name}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Address</p>
+                  <p className="font-semibold">{salesBill.party.address || 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Contact</p>
+                  <p className="font-semibold">{salesBill.party.phone1 || 'N/A'}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Sales Items */}
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Sales Items</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-2">Product</th>
+                      <th className="text-right p-2">Weight</th>
+                      <th className="text-right p-2">Rate</th>
+                      <th className="text-right p-2">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {salesBill.salesItems.map((item, index) => (
+                      <tr key={item.id} className="border-b">
+                        <td className="p-2">{item.product.name}</td>
+                        <td className="text-right p-2">{item.qty}</td>
+                        <td className="text-right p-2">₹{item.rate.toFixed(2)}</td>
+                        <td className="text-right p-2">₹{item.amount.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Financial Summary */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Financial Summary</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="text-center p-4 bg-blue-50 rounded">
+                  <p className="text-sm text-gray-600">Total Amount</p>
+                  <p className="text-2xl font-bold text-blue-600">₹{salesBill.totalAmount.toFixed(2)}</p>
+                </div>
+                <div className="text-center p-4 bg-green-50 rounded">
+                  <p className="text-sm text-gray-600">Received Amount</p>
+                  <p className="text-2xl font-bold text-green-600">₹{salesBill.receivedAmount.toFixed(2)}</p>
+                </div>
+                <div className="text-center p-4 bg-red-50 rounded">
+                  <p className="text-sm text-gray-600">Balance Amount</p>
+                  <p className="text-2xl font-bold text-red-600">₹{salesBill.balanceAmount.toFixed(2)}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </DashboardLayout>
+  )
+}
