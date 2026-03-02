@@ -19,10 +19,11 @@ interface PurchaseBill {
   paidAmount: number
   balanceAmount: number
   status: string
-  supplier: {
-    name: string
-    address: string
-    krashakAnubandhNumber: string
+  supplier?: {
+    name?: string
+  }
+  farmer?: {
+    name?: string
   }
 }
 
@@ -35,9 +36,7 @@ interface SalesBill {
   balanceAmount: number
   status: string
   party: {
-    name: string
-    address: string
-    phone1: string
+    name?: string
   }
 }
 
@@ -69,7 +68,7 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
   const [payments, setPayments] = useState<Payment[]>([])
 
   // Filter states
-  const [filterBillType, setFilterBillType] = useState('')
+  const [filterBillType, setFilterBillType] = useState('all')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
@@ -94,9 +93,9 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
       const salesData = await salesRes.json()
       const paymentsData = await paymentsRes.json()
       
-      setPurchaseBills(purchaseData)
-      setSalesBills(salesData)
-      setPayments(paymentsData)
+      setPurchaseBills(Array.isArray(purchaseData) ? purchaseData : [])
+      setSalesBills(Array.isArray(salesData) ? salesData : [])
+      setPayments(Array.isArray(paymentsData) ? paymentsData : [])
       
       setLoading(false)
     } catch (error) {
@@ -108,7 +107,7 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
   const getFilteredPayments = () => {
     let filtered = payments
 
-    if (filterBillType) {
+    if (filterBillType && filterBillType !== 'all') {
       filtered = filtered.filter(payment => payment.billType === filterBillType)
     }
 
@@ -270,8 +269,8 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
                     <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
                     <TableCell>
                       {activeTab === 'purchase' 
-                        ? (bill as PurchaseBill).supplier.name 
-                        : (bill as SalesBill).party.name
+                        ? ((bill as PurchaseBill).supplier?.name || (bill as PurchaseBill).farmer?.name || '-')
+                        : ((bill as SalesBill).party?.name || '-')
                       }
                     </TableCell>
                     <TableCell>₹{bill.totalAmount.toFixed(2)}</TableCell>
@@ -332,7 +331,7 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
                   <SelectValue placeholder="All Types" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Types</SelectItem>
+                  <SelectItem value="all">All Types</SelectItem>
                   <SelectItem value="purchase">Purchase</SelectItem>
                   <SelectItem value="sales">Sales</SelectItem>
                 </SelectContent>

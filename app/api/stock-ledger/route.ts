@@ -1,34 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { cookies } from 'next/headers'
+import { z } from 'zod'
+import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
+
+const stockLedgerCreateSchema = z.object({
+  companyId: z.string().min(1),
+  productId: z.string().min(1),
+  entryDate: z.string().min(1),
+  type: z.enum(['purchase', 'sales', 'adjustment']),
+  qtyIn: z.coerce.number().min(0).optional(),
+  qtyOut: z.coerce.number().min(0).optional(),
+  refTable: z.string().min(1),
+  refId: z.string().min(1)
+}).refine((data) => (data.qtyIn || 0) > 0 || (data.qtyOut || 0) > 0, {
+  message: 'Either qtyIn or qtyOut must be greater than 0',
+  path: ['qtyIn']
+})
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    console.log('Received stock ledger body:', JSON.stringify(body, null, 2))
-
-    const {
-      companyId,
-      productId,
-      entryDate,
-      type,
-      qtyIn,
-      qtyOut,
-      refTable,
-      refId,
-      note
-    } = body
-
-    // Validate required fields
-    if (!companyId || !productId || !entryDate || !type || (!qtyIn && !qtyOut)) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
-    }
-
-    // Get user from cookies
-    const cookieStore = await cookies()
-    const userId = cookieStore.get('userId')?.value || 'test-user'
-
-    console.log('Recording stock ledger entry for product:', productId)
+    const parsed = await parseJsonWithSchema(request, stockLedgerCreateSchema)
+    if (!parsed.ok) return parsed.response
+    const { companyId, productId, entryDate, type, qtyIn, qtyOut, refTable, refId } = parsed.data
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
     // Create stock ledger entry
     const stockLedger = await prisma.stockLedger.create({
@@ -37,18 +32,15 @@ export async function POST(request: NextRequest) {
         entryDate: new Date(entryDate),
         productId,
         type,
-        qtyIn: parseFloat(qtyIn) || 0,
-        qtyOut: parseFloat(qtyOut) || 0,
+        qtyIn: Number(qtyIn) || 0,
+        qtyOut: Number(qtyOut) || 0,
         refTable,
         refId
       }
     })
 
-    console.log('Stock ledger entry recorded:', stockLedger.id)
-
     return NextResponse.json({ success: true, stockLedger })
   } catch (error) {
-    console.error('Error recording stock ledger entry:', error)
     const errorMessage = error instanceof Error ? error.message : 'Internal server error'
     return NextResponse.json({ error: errorMessage }, { status: 500 })
   }
@@ -63,6 +55,8 @@ export async function GET(request: NextRequest) {
     if (!companyId) {
       return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
     }
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
     let whereClause: any = { companyId }
     if (productId) {
@@ -85,7 +79,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(stockLedger)
   } catch (error) {
-    console.error('Error fetching stock ledger:', error)
+    void error
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

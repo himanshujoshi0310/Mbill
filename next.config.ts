@@ -1,8 +1,10 @@
 import type { NextConfig } from "next";
+import { env, ALLOWED_ORIGIN, isProduction } from './lib/config'
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ['127.0.0.1:51445'],
   experimental: {
+    optimizePackageImports: ['lucide-react'],
     serverActions: {
       allowedOrigins: ['127.0.0.1:51445']
     }
@@ -14,7 +16,7 @@ const nextConfig: NextConfig = {
         headers: [
           {
             key: 'Access-Control-Allow-Origin',
-            value: process.env.ALLOWED_ORIGINS?.split(',')?.[0] || 'http://localhost:3000'
+            value: ALLOWED_ORIGIN
           },
           {
             key: 'Access-Control-Allow-Methods',
@@ -50,7 +52,7 @@ const nextConfig: NextConfig = {
           },
           {
             key: 'Content-Security-Policy',
-            value: process.env.NODE_ENV === 'production' 
+            value: isProduction 
               ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'"
               : "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'"
           }

@@ -1,158 +1,217 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
 import { z } from 'zod'
+import { prisma } from '@/lib/prisma'
+import { normalizeOptionalString, normalizePhone, parseBooleanParam, requireRoles } from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
-const prisma = new PrismaClient()
+const companyPayloadSchema = z
+  .object({
+    name: z.string().trim().min(1, 'Company name is required').max(100),
+    traderId: z.string().trim().min(1).optional().nullable(),
+    address: z.string().trim().max(400).optional().nullable(),
+    phone: z.string().optional().nullable(),
+    locked: z.boolean().optional()
+  })
+  .strict()
 
-// Validation schemas
-const createCompanySchema = z.object({
-  name: z.string().min(1, "Company name is required").max(100),
-  traderId: z.string().min(1, "Trader ID is required"),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-})
-
-const updateCompanySchema = z.object({
-  name: z.string().min(1, "Company name is required").max(100),
-  traderId: z.string().min(1, "Trader ID is required"),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-})
-
-// Helper function to verify super admin authentication
-async function verifySuperAdmin() {
-  // TEMPORARILY DISABLED FOR TESTING
-  console.log('Super admin authentication bypassed for testing')
-  return true
+function normalizeTraderId(input: string | null | undefined): string | null {
+  if (!input) return null
+  const trimmed = input.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
-// GET - List all companies
+function normalizeCompanyPayload(payload: z.infer<typeof companyPayloadSchema>) {
+  const normalizedPhone = payload.phone == null ? null : normalizePhone(payload.phone)
+  if (payload.phone && !normalizedPhone) {
+    return { error: 'Phone must contain exactly 10 digits' as const }
+  }
+
+  return {
+    name: payload.name.trim(),
+    traderId: normalizeTraderId(payload.traderId),
+    address: normalizeOptionalString(payload.address),
+    phone: normalizedPhone,
+    locked: payload.locked ?? false
+  }
+}
+
 export async function GET(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
-
-    const { searchParams } = new URL(request.url)
-    const traderId = searchParams.get('traderId')
-
-    const where = traderId ? { traderId } : {}
+    const searchParams = new URL(request.url).searchParams
+    const includeDeleted = parseBooleanParam(searchParams.get('includeDeleted'))
+    const traderIdFilter = normalizeTraderId(searchParams.get('traderId'))
 
     const companies = await prisma.company.findMany({
-      where,
-      include: {
+      where: {
+        ...(includeDeleted ? {} : { deletedAt: null }),
+        ...(traderIdFilter ? { traderId: traderIdFilter } : {})
+      },
+      select: {
+        id: true,
+        name: true,
+        traderId: true,
+        address: true,
+        phone: true,
+        locked: true,
+        deletedAt: true,
+        createdAt: true,
+        updatedAt: true,
         trader: {
           select: {
             id: true,
             name: true
           }
         },
-        _count: {
-          select: {
-            parties: true,
-            farmers: true,
-            suppliers: true,
-            products: true,
-            purchaseBills: true,
-            salesBills: true
-          }
-        }
+        users: {
+          where: includeDeleted ? undefined : { deletedAt: null },
+          select: { id: true }
+        },
+        parties: { select: { id: true } },
+        farmers: { select: { id: true } },
+        suppliers: { select: { id: true } },
+        products: { select: { id: true } },
+        purchaseBills: { select: { id: true } },
+        salesBills: { select: { id: true } }
       },
       orderBy: {
         createdAt: 'desc'
       }
     })
 
-    return NextResponse.json(companies)
-  } catch (error) {
-    console.error('❌ Error fetching companies:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch companies' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+    const response = companies.map((company) => ({
+      id: company.id,
+      name: company.name,
+      traderId: company.traderId,
+      address: company.address,
+      phone: company.phone,
+      locked: company.locked,
+      deletedAt: company.deletedAt,
+      createdAt: company.createdAt,
+      updatedAt: company.updatedAt,
+      trader: company.trader,
+      _count: {
+        users: company.users.length,
+        parties: company.parties.length,
+        farmers: company.farmers.length,
+        suppliers: company.suppliers.length,
+        products: company.products.length,
+        purchaseBills: company.purchaseBills.length,
+        salesBills: company.salesBills.length
+      }
+    }))
+
+    return NextResponse.json(response)
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch companies' }, { status: 500 })
   }
 }
 
-// POST - Create new company
 export async function POST(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
+    const body = await request.json().catch(() => null)
+    const parsed = companyPayloadSchema.safeParse(body)
 
-    const body = await request.json()
-    const validatedData = createCompanySchema.parse(body)
-
-    // Verify trader exists
-    const trader = await prisma.trader.findUnique({
-      where: { id: validatedData.traderId }
-    })
-
-    if (!trader) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Trader not found' },
-        { status: 404 }
+        {
+          error: 'Validation failed',
+          details: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        },
+        { status: 400 }
       )
     }
 
-    // Check if company with same name already exists for this trader
-    const existingCompany = await prisma.company.findFirst({
-      where: { 
-        name: validatedData.name,
-        traderId: validatedData.traderId
+    const normalized = normalizeCompanyPayload(parsed.data)
+    if ('error' in normalized) {
+      return NextResponse.json({ error: normalized.error }, { status: 400 })
+    }
+
+    if (normalized.traderId) {
+      const trader = await prisma.trader.findFirst({
+        where: {
+          id: normalized.traderId,
+          deletedAt: null
+        },
+        select: { id: true }
+      })
+
+      if (!trader) {
+        return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
       }
+    }
+
+    const duplicate = await prisma.company.findFirst({
+      where: {
+        name: normalized.name,
+        traderId: normalized.traderId,
+        deletedAt: null
+      },
+      select: { id: true }
     })
 
-    if (existingCompany) {
+    if (duplicate) {
       return NextResponse.json(
-        { error: 'Company with this name already exists for this trader' },
+        { error: 'Company with this name already exists for the selected trader' },
         { status: 409 }
       )
     }
 
     const company = await prisma.company.create({
-      data: validatedData,
+      data: {
+        name: normalized.name,
+        traderId: normalized.traderId,
+        address: normalized.address,
+        phone: normalized.phone,
+        locked: normalized.locked
+      },
       include: {
         trader: {
           select: {
             id: true,
             name: true
           }
-        },
-        _count: {
-          select: {
-            parties: true,
-            farmers: true,
-            suppliers: true,
-            products: true,
-            purchaseBills: true,
-            salesBills: true
-          }
         }
       }
     })
 
-    console.log('✅ Company created:', { 
-      id: company.id, 
-      name: company.name, 
-      traderId: company.traderId 
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action: company.locked ? 'LOCK' : 'CREATE',
+      resourceType: 'COMPANY',
+      resourceId: company.id,
+      scope: {
+        traderId: company.traderId,
+        companyId: company.id
+      },
+      after: company,
+      requestMeta: getAuditRequestMeta(request)
     })
 
-    return NextResponse.json(company, { status: 201 })
-  } catch (error) {
-    console.error('❌ Error creating company:', error)
-    
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: error.issues },
-        { status: 400 }
-      )
-    }
-
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to create company' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
+      {
+        ...company,
+        _count: {
+          users: 0,
+          parties: 0,
+          farmers: 0,
+          suppliers: 0,
+          products: 0,
+          purchaseBills: 0,
+          salesBills: 0
+        }
+      },
+      { status: 201 }
     )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to create company' }, { status: 500 })
   }
 }

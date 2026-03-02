@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, Suspense, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { ArrowLeft, CreditCard, DollarSign, Search } from 'lucide-react'
+import { isAbortError } from '@/lib/http'
 
 interface PurchaseBill {
   id: string
@@ -18,12 +19,26 @@ interface PurchaseBill {
   paidAmount: number
   balanceAmount: number
   status: string
-  supplier: {
+  farmer?: {
     id: string
     name: string
     address: string
     phone1: string
-  }
+  } | null
+  supplier?: {
+    id: string
+    name: string
+    address: string
+    phone1: string
+  } | null
+}
+
+function getBillPartyName(bill: PurchaseBill): string {
+  return bill.supplier?.name || bill.farmer?.name || 'Unknown'
+}
+
+function getBillPartyPhone(bill: PurchaseBill): string {
+  return bill.supplier?.phone1 || bill.farmer?.phone1 || 'N/A'
 }
 
 export default function PurchasePaymentEntryPage() {
@@ -46,7 +61,6 @@ function PurchasePaymentEntryPageContent() {
 
   // Bill search state
   const [billSearchTerm, setBillSearchTerm] = useState('')
-  const [filteredBills, setFilteredBills] = useState<PurchaseBill[]>([])
   const [showBillDropdown, setShowBillDropdown] = useState(false)
   const [selectedBillData, setSelectedBillData] = useState<PurchaseBill | null>(null)
 
@@ -59,44 +73,60 @@ function PurchasePaymentEntryPageContent() {
   const [txnRef, setTxnRef] = useState('')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const toNonNegative = (value: string) => {
+    if (value === '') return ''
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return ''
+    return String(Math.max(0, parsed))
+  }
 
-  useEffect(() => {
-    if (companyId) {
-      fetchPurchaseBills()
-    }
-  }, [companyId])
-
-  // Fetch bills when date filters change
-  useEffect(() => {
-    if (companyId) {
-      fetchPurchaseBills()
-    }
-  }, [dateFrom, dateTo])
-
-  useEffect(() => {
-    if (billId) {
-      setSelectedBill(billId)
-    }
-  }, [billId])
-
-  // Filter bills based on search term
-  useEffect(() => {
-    if (billSearchTerm) {
-      const filtered = purchaseBills.filter(bill => 
-        bill.billNo.toLowerCase().includes(billSearchTerm.toLowerCase()) ||
-        bill.supplier.name.toLowerCase().includes(billSearchTerm.toLowerCase())
-      )
-      setFilteredBills(filtered)
-    } else {
-      setFilteredBills(purchaseBills)
-    }
+  const filteredBills = useMemo(() => {
+    const query = billSearchTerm.trim().toLowerCase()
+    if (!query) return purchaseBills
+    return purchaseBills.filter(
+      (bill) =>
+        (bill.billNo || '').toLowerCase().includes(query) ||
+        getBillPartyName(bill).toLowerCase().includes(query)
+    )
   }, [billSearchTerm, purchaseBills])
+
+  useEffect(() => {
+    if (!companyId) {
+      setLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    setLoading(true)
+    void fetchPurchaseBills(controller.signal)
+    return () => controller.abort()
+  }, [companyId, dateFrom, dateTo])
+
+  useEffect(() => {
+    if (purchaseBills.length === 0) {
+      setSelectedBill('')
+      setSelectedBillData(null)
+      setBillSearchTerm('')
+      return
+    }
+
+    let nextId = selectedBill
+    if (!nextId || !purchaseBills.some((row) => row.id === nextId)) {
+      nextId = billId && purchaseBills.some((row) => row.id === billId) ? billId : purchaseBills[0].id
+    }
+
+    const nextSelected = purchaseBills.find((row) => row.id === nextId) || null
+    setSelectedBill(nextId)
+    setSelectedBillData(nextSelected)
+    if (nextSelected) {
+      setBillSearchTerm(`${nextSelected.billNo} - ${getBillPartyName(nextSelected)}`)
+    }
+  }, [purchaseBills, billId, selectedBill])
 
   // Handle bill selection
   const handleBillSelect = (bill: PurchaseBill) => {
     setSelectedBill(bill.id)
     setSelectedBillData(bill)
-    setBillSearchTerm(`${bill.billNo} - ${bill.supplier.name}`)
+    setBillSearchTerm(`${bill.billNo} - ${getBillPartyName(bill)}`)
     setShowBillDropdown(false)
   }
 
@@ -119,7 +149,7 @@ function PurchasePaymentEntryPageContent() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const fetchPurchaseBills = async () => {
+  const fetchPurchaseBills = async (signal?: AbortSignal) => {
     try {
       let url = `/api/purchase-bills?companyId=${companyId}`
       
@@ -132,20 +162,41 @@ function PurchasePaymentEntryPageContent() {
         url += `&${params.toString()}`
       }
       
-      const response = await fetch(url)
-      
+      const response = await fetch(url, { signal })
+      if (signal?.aborted) return
+
+      if (response.status === 401) {
+        setPurchaseBills([])
+        setSelectedBillData(null)
+        setLoading(false)
+        router.push('/login')
+        return
+      }
+
+      if (response.status === 403) {
+        // Locked/out-of-scope should not crash app; keep page stable with empty list.
+        setPurchaseBills([])
+        setSelectedBillData(null)
+        setLoading(false)
+        return
+      }
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
       
       const data = await response.json()
+      const rows = Array.isArray(data) ? data : []
       
       // Filter bills that have pending balance (unpaid and partially paid)
-      const pendingBills = data.filter((bill: PurchaseBill) => bill.balanceAmount > 0)
+      const pendingBills = rows.filter((bill: PurchaseBill) => Number(bill?.balanceAmount || 0) > 0)
       setPurchaseBills(pendingBills)
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching purchase bills:', error)
+      setPurchaseBills([])
+      setSelectedBillData(null)
       setLoading(false)
     }
   }
@@ -299,7 +350,7 @@ function PurchasePaymentEntryPageContent() {
                                 className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0"
                                 onClick={() => handleBillSelect(bill)}
                               >
-                                <div className="font-medium">{bill.billNo} - {bill.supplier.name}</div>
+                                <div className="font-medium">{bill.billNo} - {getBillPartyName(bill)}</div>
                                 <div className="text-sm text-gray-500">Balance: ₹{bill.balanceAmount.toFixed(2)} | Date: {new Date(bill.billDate).toLocaleDateString()}</div>
                               </div>
                             ))
@@ -329,9 +380,10 @@ function PurchasePaymentEntryPageContent() {
                     <Input
                       id="amount"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
+                      onChange={(e) => setAmount(toNonNegative(e.target.value))}
                       placeholder="Enter amount"
                       required
                     />
@@ -409,12 +461,12 @@ function PurchasePaymentEntryPageContent() {
                         <p className="font-semibold">{new Date(selectedBillData.billDate).toLocaleDateString()}</p>
                       </div>
                       <div>
-                        <Label>Supplier Name</Label>
-                        <p className="font-semibold">{selectedBillData.supplier.name}</p>
+                        <Label>Party Name</Label>
+                        <p className="font-semibold">{getBillPartyName(selectedBillData)}</p>
                       </div>
                       <div>
-                        <Label>Supplier Contact</Label>
-                        <p className="font-semibold">{selectedBillData.supplier.phone1 || 'N/A'}</p>
+                        <Label>Party Contact</Label>
+                        <p className="font-semibold">{getBillPartyPhone(selectedBillData)}</p>
                       </div>
                     </div>
 
@@ -437,7 +489,7 @@ function PurchasePaymentEntryPageContent() {
                           <span>Status:</span>
                           <span className={`font-medium px-2 py-1 rounded text-xs ${
                             selectedBillData.status === 'paid' ? 'bg-green-100 text-green-800' :
-                            selectedBillData.status === 'partial' ? 'bg-yellow-100 text-yellow-800' :
+                            (selectedBillData.status === 'partial' || selectedBillData.status === 'partially_paid') ? 'bg-yellow-100 text-yellow-800' :
                             'bg-red-100 text-red-800'
                           }`}>
                             {selectedBillData.status}

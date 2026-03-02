@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,6 +10,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Eye, Edit, Trash2, Printer, FileText, Download } from 'lucide-react'
+import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
+import { resolveCompanyId } from '@/lib/company-context'
+import { isAbortError } from '@/lib/http'
 
 interface SalesBill {
   id: string
@@ -38,7 +41,6 @@ interface SalesBill {
 export default function SalesListPage() {
   const router = useRouter()
   const [salesBills, setSalesBills] = useState<SalesBill[]>([])
-  const [filteredBills, setFilteredBills] = useState<SalesBill[]>([])
   const [loading, setLoading] = useState(true)
   const [companyId, setCompanyId] = useState('')
 
@@ -54,17 +56,14 @@ export default function SalesListPage() {
   const [payable, setPayable] = useState('')
 
   useEffect(() => {
-    fetchSalesBills()
+    const controller = new AbortController()
+    void fetchSalesBills(controller.signal)
+    return () => controller.abort()
   }, [])
 
-  useEffect(() => {
-    applyFilters()
-  }, [salesBills, invoiceNumber, partyName, partyAddress, dateFrom, dateTo, weight, rate, partyContact, payable])
-
-  const fetchSalesBills = async () => {
+  const fetchSalesBills = async (signal?: AbortSignal) => {
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyIdParam = urlParams.get('companyId')
+      const companyIdParam = await resolveCompanyId(window.location.search)
 
       if (!companyIdParam) {
         alert('Company not selected')
@@ -74,18 +73,39 @@ export default function SalesListPage() {
 
       setCompanyId(companyIdParam)
 
-      const response = await fetch(`/api/sales-bills?companyId=${companyIdParam}`)
-      const data = await response.json()
+      const cacheKey = `sales-bills:${companyIdParam}`
+      const cached = getClientCache<SalesBill[]>(cacheKey, 15_000)
+      if (cached) {
+        setSalesBills(cached)
+        setLoading(false)
+      }
+
+      const response = await fetch(`/api/sales-bills?companyId=${companyIdParam}`, { signal })
+      if (signal?.aborted) return
+      if (response.status === 401) {
+        setLoading(false)
+        router.push('/login')
+        return
+      }
+      if (response.status === 403) {
+        setSalesBills([])
+        setLoading(false)
+        return
+      }
+      const raw = await response.json().catch(() => [])
+      const data = Array.isArray(raw) ? raw : []
       setSalesBills(data)
-      setFilteredBills(data)
+      setClientCache(cacheKey, data)
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching sales bills:', error)
+      setSalesBills([])
       setLoading(false)
     }
   }
 
-  const applyFilters = () => {
+  const filteredBills = useMemo(() => {
     let filtered = salesBills
 
     if (invoiceNumber) {
@@ -128,8 +148,8 @@ export default function SalesListPage() {
       filtered = filtered.filter(bill => bill.totalAmount.toString().includes(payable))
     }
 
-    setFilteredBills(filtered)
-  }
+    return filtered
+  }, [salesBills, invoiceNumber, partyName, partyAddress, dateFrom, dateTo, weight, rate, partyContact, payable])
 
   const clearFilters = () => {
     setInvoiceNumber('')
@@ -179,7 +199,7 @@ export default function SalesListPage() {
 
       if (response.ok) {
         alert('Sales bill deleted successfully!')
-        fetchSalesBills() // Refresh the list
+        void fetchSalesBills() // Refresh the list
       } else {
         const errorData = await response.json()
         alert('Error deleting sales bill: ' + (errorData.error || 'Unknown error'))
@@ -191,22 +211,22 @@ export default function SalesListPage() {
   }
 
   const handlePrint = (billId: string) => {
-    // TODO: Implement print functionality
-    console.log('Print bill:', billId)
+    void billId
   }
 
   const exportToExcel = () => {
     // TODO: Implement Excel export
-    console.log('Export to Excel')
   }
 
   const exportToPdf = () => {
     // TODO: Implement PDF export
-    console.log('Export to PDF')
   }
 
-  const getTotalBills = () => filteredBills.length
-  const getTotalAmount = () => filteredBills.reduce((sum, bill) => sum + (bill.totalAmount || 0), 0)
+  const totalBills = filteredBills.length
+  const totalAmount = useMemo(
+    () => filteredBills.reduce((sum, bill) => sum + (bill.totalAmount || 0), 0),
+    [filteredBills]
+  )
 
   if (loading) {
     return (
@@ -315,7 +335,7 @@ export default function SalesListPage() {
               </div>
             </div>
             <div className="flex gap-2 mt-4">
-              <Button onClick={applyFilters}>Show</Button>
+              <Button disabled>Auto</Button>
               <Button variant="outline" onClick={clearFilters}>Clear</Button>
               <Button variant="outline" onClick={exportToExcel}>
                 <Download className="w-4 h-4 mr-2" />
@@ -423,10 +443,10 @@ export default function SalesListPage() {
           <CardContent className="pt-6">
             <div className="flex justify-between items-center">
               <div className="text-lg font-semibold">
-                Total Bills: {getTotalBills()}
+                Total Bills: {totalBills}
               </div>
               <div className="text-lg font-semibold">
-                Total Amount: ₹{getTotalAmount().toFixed(2)}
+                Total Amount: ₹{totalAmount.toFixed(2)}
               </div>
             </div>
           </CardContent>

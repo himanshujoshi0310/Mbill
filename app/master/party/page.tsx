@@ -1,14 +1,12 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Plus, Edit, Trash2, Users } from 'lucide-react'
 
@@ -27,16 +25,18 @@ interface Party {
 }
 
 export default function PartyMasterPage() {
-  const router = useRouter()
   const [parties, setParties] = useState<Party[]>([])
+  const [filteredParties, setFilteredParties] = useState<Party[]>([])
   const [loading, setLoading] = useState(true)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingParty, setEditingParty] = useState<Party | null>(null)
-  const [searchParams, setSearchParams] = useState<URLSearchParams>()
+  const [companyId, setCompanyId] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   // Form state
   const [formData, setFormData] = useState({
-    type: 'farmer' as 'farmer' | 'buyer',
+    type: 'buyer' as 'farmer' | 'buyer',
     name: '',
     address: '',
     phone1: '',
@@ -48,26 +48,51 @@ export default function PartyMasterPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    setSearchParams(params)
-    const companyId = params.get('companyId')
+    const currentCompanyId = params.get('companyId') || ''
+    setCompanyId(currentCompanyId)
     
-    if (companyId) {
-      fetchParties()
+    if (currentCompanyId) {
+      fetchParties(currentCompanyId)
+    } else {
+      setLoading(false)
+      setMessage({ type: 'error', text: 'Company ID missing in URL. Please open from dashboard.' })
     }
   }, [])
 
-  const fetchParties = async () => {
+  useEffect(() => {
+    const term = searchTerm.trim().toLowerCase()
+    if (!term) {
+      setFilteredParties(parties)
+      return
+    }
+
+    const filtered = parties.filter((party) =>
+      [party.name, party.type, party.phone1 || '', party.bankName || '', party.address || '']
+        .join(' ')
+        .toLowerCase()
+        .includes(term)
+    )
+    setFilteredParties(filtered)
+  }, [parties, searchTerm])
+
+  const fetchParties = async (id = companyId) => {
+    if (!id) return
+
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/parties?companyId=${companyId}`)
+      const response = await fetch(`/api/parties?companyId=${id}`)
       if (response.ok) {
         const data = await response.json()
-        setParties(data)
+        const buyerParties = Array.isArray(data)
+          ? data.filter((party: Party) => party?.type === 'buyer')
+          : []
+        setParties(buyerParties)
+      } else {
+        const error = await response.json()
+        setMessage({ type: 'error', text: error.error || 'Failed to load parties' })
       }
     } catch (error) {
       console.error('Error fetching parties:', error)
+      setMessage({ type: 'error', text: 'Failed to load parties' })
     } finally {
       setLoading(false)
     }
@@ -77,14 +102,15 @@ export default function PartyMasterPage() {
     e.preventDefault()
     
     if (!formData.name.trim() || !formData.type) {
-      alert('Party name and type are required')
+      setMessage({ type: 'error', text: 'Party name and type are required' })
+      return
+    }
+    if (!companyId) {
+      setMessage({ type: 'error', text: 'Company ID missing. Cannot save.' })
       return
     }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const url = editingParty 
         ? `/api/parties?id=${editingParty.id}&companyId=${companyId}`
         : `/api/parties?companyId=${companyId}`
@@ -96,20 +122,27 @@ export default function PartyMasterPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          ...formData,
+          type: 'buyer'
+        }),
       })
 
       if (response.ok) {
-        alert(editingParty ? 'Party updated successfully!' : 'Party created successfully!')
+        const result = await response.json()
+        setMessage({
+          type: 'success',
+          text: result.message || (editingParty ? 'Party updated successfully' : 'Party data stored successfully')
+        })
         resetForm()
         fetchParties()
       } else {
         const error = await response.json()
-        alert(error.error || 'Operation failed')
+        setMessage({ type: 'error', text: error.error || 'Operation failed' })
       }
     } catch (error) {
       console.error('Error:', error)
-      alert('Operation failed')
+      setMessage({ type: 'error', text: 'Operation failed' })
     }
   }
 
@@ -130,31 +163,119 @@ export default function PartyMasterPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this party? This may affect existing transactions.')) return
+    if (!companyId) return
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const response = await fetch(`/api/parties?id=${id}&companyId=${companyId}`, {
         method: 'DELETE',
       })
 
       if (response.ok) {
-        alert('Party deleted successfully!')
+        const result = await response.json()
+        setMessage({ type: 'success', text: result.message || 'Party deleted successfully' })
         fetchParties()
       } else {
         const error = await response.json()
-        alert(error.error || 'Delete failed')
+        setMessage({ type: 'error', text: error.error || 'Delete failed' })
       }
     } catch (error) {
       console.error('Error:', error)
-      alert('Delete failed')
+      setMessage({ type: 'error', text: 'Delete failed' })
     }
+  }
+
+  const handleDeleteAll = async () => {
+    if (!companyId) return
+    if (!confirm('Delete all parties for this company?')) return
+
+    try {
+      const response = await fetch(`/api/parties?companyId=${companyId}&all=true`, {
+        method: 'DELETE'
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        setMessage({ type: 'error', text: result.error || 'Failed to delete all parties' })
+        return
+      }
+      setMessage({ type: 'success', text: result.message || 'All parties deleted successfully' })
+      fetchParties()
+    } catch (error) {
+      console.error('Delete all failed:', error)
+      setMessage({ type: 'error', text: 'Failed to delete all parties' })
+    }
+  }
+
+  const handleAddDummyData = async () => {
+    if (!companyId) return
+
+    try {
+      const response = await fetch(`/api/parties?companyId=${companyId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seed: true })
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        setMessage({ type: 'error', text: result.error || 'Failed to add dummy data' })
+        return
+      }
+      setMessage({ type: 'success', text: result.message || 'Dummy data added successfully' })
+      fetchParties()
+    } catch (error) {
+      console.error('Dummy data add failed:', error)
+      setMessage({ type: 'error', text: 'Failed to add dummy data' })
+    }
+  }
+
+  const handleExportCsv = () => {
+    if (filteredParties.length === 0) {
+      setMessage({ type: 'error', text: 'No party data available to export' })
+      return
+    }
+
+    const headers = [
+      'Name',
+      'Type',
+      'Address',
+      'Phone1',
+      'Phone2',
+      'BankName',
+      'AccountNo',
+      'IFSCCode',
+      'CreatedAt'
+    ]
+    const rows = filteredParties.map((party) => [
+      party.name,
+      party.type,
+      party.address || '',
+      party.phone1 || '',
+      party.phone2 || '',
+      party.bankName || '',
+      party.accountNo || '',
+      party.ifscCode || '',
+      new Date(party.createdAt).toISOString()
+    ])
+
+    const csv = [
+      headers.join(','),
+      ...rows.map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(','))
+    ].join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    link.href = url
+    link.download = `parties_${companyId}_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    setMessage({ type: 'success', text: 'Party data exported successfully' })
   }
 
   const resetForm = () => {
     setFormData({
-      type: 'farmer',
+      type: 'buyer',
       name: '',
       address: '',
       phone1: '',
@@ -175,9 +296,6 @@ export default function PartyMasterPage() {
     )
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
-
   return (
     <DashboardLayout companyId={companyId}>
       <div className="p-6">
@@ -187,11 +305,43 @@ export default function PartyMasterPage() {
               <Users className="h-8 w-8 text-purple-600" />
               <h1 className="text-3xl font-bold">Party Master</h1>
             </div>
-            <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Party
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={handleExportCsv} variant="outline">Export CSV</Button>
+              <Button onClick={handleAddDummyData} variant="outline">Add Dummy Data</Button>
+              <Button onClick={handleDeleteAll} variant="destructive">Delete All</Button>
+              <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
+                <Plus className="h-4 w-4" />
+                Add Party
+              </Button>
+            </div>
           </div>
+
+          <Card className="mb-4">
+            <CardContent className="pt-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Input
+                  placeholder="Search by name, phone, bank, address"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+                <div className="text-sm text-muted-foreground flex items-center md:justify-end">
+                  Showing {filteredParties.length} of {parties.length} buyers
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {message && (
+            <div
+              className={`mb-4 rounded-md border px-4 py-3 text-sm ${
+                message.type === 'success'
+                  ? 'border-green-300 bg-green-50 text-green-800'
+                  : 'border-red-300 bg-red-50 text-red-800'
+              }`}
+            >
+              {message.text}
+            </div>
+          )}
 
           {/* Form */}
           {isFormOpen && (
@@ -203,16 +353,8 @@ export default function PartyMasterPage() {
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <div>
-                      <Label htmlFor="type">Party Type *</Label>
-                      <Select value={formData.type} onValueChange={(value: 'farmer' | 'buyer') => setFormData({ ...formData, type: value })}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="farmer">Farmer</SelectItem>
-                          <SelectItem value="buyer">Buyer</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <Label htmlFor="type">Party Type</Label>
+                      <Input id="type" value="Buyer" readOnly className="bg-muted" />
                     </div>
                     <div>
                       <Label htmlFor="name">Party Name *</Label>
@@ -296,12 +438,12 @@ export default function PartyMasterPage() {
           {/* Table */}
           <Card>
             <CardHeader>
-              <CardTitle>Party List</CardTitle>
+              <CardTitle>Buyer List</CardTitle>
             </CardHeader>
             <CardContent>
-              {parties.length === 0 ? (
+              {filteredParties.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
-                  No parties found. Add your first party to get started.
+                  No buyers found. Add your first buyer to get started.
                 </div>
               ) : (
                 <Table>
@@ -316,12 +458,12 @@ export default function PartyMasterPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {parties.map((party) => (
+                    {filteredParties.map((party) => (
                       <TableRow key={party.id}>
                         <TableCell className="font-medium">{party.name}</TableCell>
                         <TableCell>
-                          <Badge variant={party.type === 'farmer' ? 'default' : 'secondary'}>
-                            {party.type === 'farmer' ? '🌾 Farmer' : '🛒 Buyer'}
+                          <Badge variant="secondary">
+                            🛒 Buyer
                           </Badge>
                         </TableCell>
                         <TableCell>

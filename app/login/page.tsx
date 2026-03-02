@@ -30,8 +30,6 @@ export default function LoginPage() {
         return
       }
 
-      console.log('Login attempt:', { traderId, userId })
-
       // Call login API
       const response = await fetch('/api/auth', {
         method: 'POST',
@@ -41,41 +39,32 @@ export default function LoginPage() {
         body: JSON.stringify({ traderId, userId, password }),
       })
 
-      // Check Content-Type header first
       const contentType = response.headers.get('content-type')
-      console.log('Response Content-Type:', contentType)
-      console.log('Response Status:', response.status)
-      console.log('Response Status Text:', response.statusText)
 
       if (!response.ok) {
         if (contentType && contentType.includes('application/json')) {
           const errorData = await response.json()
-          console.error('Login API Error:', errorData)
           throw new Error(`Login failed: ${errorData.error || 'Unknown error'}`)
         } else {
-          const responseText = await response.text()
-          console.error('Response is HTML, not JSON:', responseText.substring(0, 200))
+          await response.text()
           throw new Error(`Login failed: Server returned HTML error page (Status: ${response.status})`)
         }
       }
 
       // Parse successful response
       if (!contentType || !contentType.includes('application/json')) {
-        const responseText = await response.text()
-        console.error('Success response is not JSON:', responseText.substring(0, 200))
+        await response.text()
         throw new Error('Login failed: Invalid response format from server')
       }
       
-      const data = await response.json()
-      console.log('Login successful:', data)
+      await response.json()
       
       // Note: HttpOnly cookies are set automatically by the server
       // No need to store tokens client-side anymore for security
       
-      // Redirect to company selection
-      router.push('/company/select')
+      // Redirect to dashboard (multi-company ready)
+      router.push('/main/dashboard')
     } catch (error) {
-      console.error('Login error:', error)
       setError(error instanceof Error ? error.message : 'Login failed. Please try again.')
     } finally {
       setLoading(false)
@@ -112,7 +101,7 @@ export default function LoginPage() {
                     type="text"
                     required
                     className="pl-10"
-                    placeholder="Enter your trader ID (e.g., KR, DEMO)"
+                    placeholder="Enter your trader ID"
                     disabled={loading}
                   />
                 </div>

@@ -17,18 +17,31 @@ export async function GET() {
     const user = await prisma.user.findFirst({
       where: {
         userId: session.userId,
-        traderId: session.traderId
+        traderId: session.traderId,
+        deletedAt: null
       },
       select: {
         id: true,
         userId: true,
         traderId: true,
+        companyId: true,
         name: true,
         role: true,
+        locked: true,
         trader: {
           select: {
             id: true,
-            name: true
+            name: true,
+            locked: true,
+            deletedAt: true
+          }
+        },
+        company: {
+          select: {
+            id: true,
+            name: true,
+            locked: true,
+            deletedAt: true
           }
         }
       }
@@ -36,17 +49,30 @@ export async function GET() {
 
     if (!user) {
       return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
+        { error: 'Invalid session user' },
+        { status: 401 }
       )
     }
 
+    if (user.locked || user.trader?.locked || user.trader?.deletedAt || user.company?.locked || user.company?.deletedAt) {
+      return NextResponse.json({ error: 'Account is locked or inactive' }, { status: 403 })
+    }
+
     // Get company for this user
-    const company = await prisma.company.findFirst({
-      where: {
-        traderId: user.traderId
-      }
-    })
+    const company = user.companyId
+      ? await prisma.company.findFirst({
+          where: {
+            id: user.companyId,
+            traderId: user.traderId,
+            deletedAt: null
+          }
+        })
+      : await prisma.company.findFirst({
+          where: {
+            traderId: user.traderId,
+            deletedAt: null
+          }
+        })
 
     return NextResponse.json({
       success: true,
@@ -66,9 +92,7 @@ export async function GET() {
     })
 
   } catch (error) {
-    if (process.env.NODE_ENV === 'development') {
-      console.error('Session check error:', error)
-    }
+    void error
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

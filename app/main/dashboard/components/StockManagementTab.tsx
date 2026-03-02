@@ -54,8 +54,8 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
   const [stockSummary, setStockSummary] = useState<StockSummary[]>([])
 
   // Filter states
-  const [filterProduct, setFilterProduct] = useState('')
-  const [filterType, setFilterType] = useState('')
+  const [filterProduct, setFilterProduct] = useState('all')
+  const [filterType, setFilterType] = useState('all')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
@@ -116,7 +116,7 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
     
     // Calculate closing stock
     Object.keys(summary).forEach(productId => {
-      summary[productId].closingStock = summary[productId].totalIn - summary[productId].totalOut
+      summary[productId].closingStock = Math.max(0, summary[productId].totalIn - summary[productId].totalOut)
     })
     
     setStockSummary(Object.values(summary))
@@ -125,11 +125,11 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
   const getFilteredLedger = () => {
     let filtered = stockLedger
 
-    if (filterProduct) {
+    if (filterProduct && filterProduct !== 'all') {
       filtered = filtered.filter(entry => entry.product.id === filterProduct)
     }
 
-    if (filterType) {
+    if (filterType && filterType !== 'all') {
       filtered = filtered.filter(entry => entry.type === filterType)
     }
 
@@ -145,7 +145,7 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
   }
 
   const getTotalStockValue = () => {
-    return stockSummary.reduce((sum, stock) => sum + stock.closingStock, 0)
+    return stockSummary.reduce((sum, stock) => sum + Math.max(0, stock.closingStock), 0)
   }
 
   const getLowStockProducts = () => {
@@ -253,11 +253,11 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
                       {stock.totalOut.toFixed(2)}
                     </TableCell>
                     <TableCell className="font-bold">
-                      {stock.closingStock.toFixed(2)}
+                      {Math.max(0, stock.closingStock).toFixed(2)}
                     </TableCell>
                     <TableCell>
-                      <Badge variant={stock.closingStock > 0 ? 'default' : 'destructive'}>
-                        {stock.closingStock > 0 ? 'In Stock' : 'Out of Stock'}
+                      <Badge variant={Math.max(0, stock.closingStock) > 0 ? 'default' : 'destructive'}>
+                        {Math.max(0, stock.closingStock) > 0 ? 'In Stock' : 'Out of Stock'}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -292,7 +292,7 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
                   <SelectValue placeholder="All Products" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Products</SelectItem>
+                  <SelectItem value="all">All Products</SelectItem>
                   {products.map((product) => (
                     <SelectItem key={product.id} value={product.id}>
                       {product.name}
@@ -308,7 +308,7 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
                   <SelectValue placeholder="All Types" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Types</SelectItem>
+                  <SelectItem value="all">All Types</SelectItem>
                   <SelectItem value="purchase">Purchase</SelectItem>
                   <SelectItem value="sales">Sales</SelectItem>
                   <SelectItem value="adjustment">Adjustment</SelectItem>

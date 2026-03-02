@@ -20,9 +20,30 @@ export default function CompanySelector({ companies }: CompanySelectorProps) {
   const router = useRouter()
 
   const handleSelect = () => {
-    if (selectedCompany) {
-      router.push(`/dashboard?companyId=${selectedCompany}`)
-    }
+    if (!selectedCompany) return
+
+    void (async () => {
+      try {
+        const response = await fetch('/api/auth/company', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ companyId: selectedCompany, force: true })
+        })
+
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}))
+          alert(result.error || 'Failed to select company')
+          return
+        }
+
+        router.push(`/main/dashboard?companyId=${selectedCompany}&companyIds=${selectedCompany}`)
+      } catch (error) {
+        console.error('Failed to set company context:', error)
+        alert('Failed to select company')
+      }
+    })()
   }
 
   return (

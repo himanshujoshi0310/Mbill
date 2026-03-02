@@ -1,39 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
 import { z } from 'zod'
+import { prisma } from '@/lib/prisma'
+import { parseBooleanParam, requireRoles } from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
-const prisma = new PrismaClient()
+const createTraderSchema = z
+  .object({
+    name: z.string().trim().min(1, 'Trader name is required').max(100),
+    locked: z.boolean().optional()
+  })
+  .strict()
 
-// Validation schemas
-const createTraderSchema = z.object({
-  name: z.string().min(1, "Trader name is required").max(100),
-})
-
-const updateTraderSchema = z.object({
-  name: z.string().min(1, "Trader name is required").max(100),
-})
-
-// Helper function to verify super admin authentication
-async function verifySuperAdmin() {
-  const session = await getSession()
-  if (!session || session.role !== 'SUPER_ADMIN') {
-    throw new Error('Unauthorized - Super Admin access required')
-  }
-}
-
-// GET - List all traders
 export async function GET(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
+    const includeDeleted = parseBooleanParam(new URL(request.url).searchParams.get('includeDeleted'))
 
     const traders = await prisma.trader.findMany({
-      include: {
-        _count: {
-          select: {
-            companies: true,
-            users: true
-          }
+      where: includeDeleted ? undefined : { deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        locked: true,
+        deletedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        companies: {
+          where: includeDeleted ? undefined : { deletedAt: null },
+          select: { id: true }
+        },
+        users: {
+          where: includeDeleted ? undefined : { deletedAt: null },
+          select: { id: true }
         }
       },
       orderBy: {
@@ -41,68 +41,84 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    return NextResponse.json(traders)
-  } catch (error) {
-    console.error('❌ Error fetching traders:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch traders' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+    const response = traders.map((trader) => ({
+      id: trader.id,
+      name: trader.name,
+      locked: trader.locked,
+      deletedAt: trader.deletedAt,
+      createdAt: trader.createdAt,
+      updatedAt: trader.updatedAt,
+      _count: {
+        companies: trader.companies.length,
+        users: trader.users.length
+      }
+    }))
+
+    return NextResponse.json(response)
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch traders' }, { status: 500 })
   }
 }
 
-// POST - Create new trader
 export async function POST(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
+    const body = await request.json().catch(() => null)
+    const parsed = createTraderSchema.safeParse(body)
 
-    const body = await request.json()
-    const validatedData = createTraderSchema.parse(body)
-
-    // Check if trader with same name already exists
-    const existingTrader = await prisma.trader.findFirst({
-      where: { name: validatedData.name }
-    })
-
-    if (existingTrader) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Trader with this name already exists' },
-        { status: 409 }
-      )
-    }
-
-    const trader = await prisma.trader.create({
-      data: validatedData,
-      include: {
-        _count: {
-          select: {
-            companies: true,
-            users: true
-          }
-        }
-      }
-    })
-
-    console.log('✅ Trader created:', { id: trader.id, name: trader.name })
-
-    return NextResponse.json(trader, { status: 201 })
-  } catch (error) {
-    console.error('❌ Error creating trader:', error)
-    
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: error.issues },
+        {
+          error: 'Validation failed',
+          details: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        },
         { status: 400 }
       )
     }
 
+    const name = parsed.data.name.trim()
+    const existing = await prisma.trader.findFirst({
+      where: {
+        name,
+        deletedAt: null
+      },
+      select: { id: true }
+    })
+
+    if (existing) {
+      return NextResponse.json({ error: 'Trader with this name already exists' }, { status: 409 })
+    }
+
+    const trader = await prisma.trader.create({
+      data: {
+        name,
+        locked: parsed.data.locked ?? false
+      }
+    })
+
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action: trader.locked ? 'LOCK' : 'CREATE',
+      resourceType: 'TRADER',
+      resourceId: trader.id,
+      scope: { traderId: trader.id },
+      after: trader,
+      requestMeta: getAuditRequestMeta(request)
+    })
+
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to create trader' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
+      {
+        ...trader,
+        _count: { companies: 0, users: 0 }
+      },
+      { status: 201 }
     )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to create trader' }, { status: 500 })
   }
 }

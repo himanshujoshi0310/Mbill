@@ -1,6 +1,9 @@
 import { redirect } from 'next/navigation'
+import { env } from '@/lib/config'
 
 export default function LoginBypassPage() {
-  // Simple bypass for development - redirect to company selection
-  redirect('/company/select')
+  if (env.NODE_ENV !== 'development') {
+    redirect('/login')
+  }
+  redirect('/main/dashboard')
 }

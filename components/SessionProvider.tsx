@@ -1,6 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState } from 'react'
+import { usePathname } from 'next/navigation'
 
 interface SessionContextType {
   isSessionExpired: boolean
@@ -15,48 +16,96 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [isSessionExpired, setIsSessionExpired] = useState(false)
   const [showSessionWarning, setShowSessionWarning] = useState(false)
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null)
+  const [hasActiveSession, setHasActiveSession] = useState(false)
 
-  const logout = () => {
-    window.location.href = '/login'
+  const logout = async () => {
+    setHasActiveSession(false)
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+    } catch {
+      // ignore errors; proceed to redirect regardless
+    }
+    const target = pathname?.startsWith('/super-admin') ? '/super-admin/login' : '/login'
+    window.location.href = target
   }
+
+  const pathname = usePathname()
 
   useEffect(() => {
     let warningTimer: NodeJS.Timeout
     let expiryTimer: NodeJS.Timeout
 
+    const clearTimers = () => {
+      clearTimeout(warningTimer)
+      clearTimeout(expiryTimer)
+    }
+
+    const startTimers = () => {
+      // Set timers for session management once we know the session is valid
+      const warningTime = 11 * 60 * 60 * 1000 + 30 * 60 * 1000 // 11h 30m
+      const expiryTime = 12 * 60 * 60 * 1000 // 12 hours
+
+      warningTimer = setTimeout(() => {
+        setShowSessionWarning(true)
+        setTimeRemaining(30 * 60) // 30 minutes remaining
+      }, warningTime)
+
+      expiryTimer = setTimeout(() => {
+        setIsSessionExpired(true)
+      }, expiryTime)
+    }
+
     const checkSession = async () => {
       try {
         const response = await fetch('/api/auth/me')
         if (response.status === 401) {
-          setIsSessionExpired(true)
+          // only mark expired if we previously had a valid session
+          if (hasActiveSession) {
+            setIsSessionExpired(true)
+          }
           return
         }
 
-        // Set timers for session management
-        const warningTime = 25 * 60 * 1000 // 25 minutes
-        const expiryTime = 30 * 60 * 1000 // 30 minutes
-
-        warningTimer = setTimeout(() => {
-          setShowSessionWarning(true)
-          setTimeRemaining(5 * 60) // 5 minutes remaining
-        }, warningTime)
-
-        expiryTimer = setTimeout(() => {
-          setIsSessionExpired(true)
-        }, expiryTime)
-
+        // session is active
+        setHasActiveSession(true)
+        setIsSessionExpired(false)
+        setShowSessionWarning(false)
+        clearTimers()
+        startTimers()
       } catch {
-        setIsSessionExpired(true)
+        if (hasActiveSession) {
+          setIsSessionExpired(true)
+        }
       }
+    }
+
+    // skip session check on public routes (login, super-admin login)
+    if (pathname === '/login' || pathname.startsWith('/super-admin/login')) {
+      // reset state when navigating to login
+      setIsSessionExpired(false)
+      setShowSessionWarning(false)
+      setHasActiveSession(false)
+      return
     }
 
     checkSession()
 
     return () => {
-      clearTimeout(warningTimer)
-      clearTimeout(expiryTimer)
+      clearTimers()
     }
-  }, [])
+  }, [pathname])
+
+  // listen for token refresh events (dispatched by global fetch interceptor)
+  useEffect(() => {
+    const handler = () => {
+      if (hasActiveSession) {
+        setIsSessionExpired(false)
+        setShowSessionWarning(false)
+      }
+    }
+    window.addEventListener('sessionRefreshed', handler)
+    return () => window.removeEventListener('sessionRefreshed', handler)
+  }, [hasActiveSession])
 
   return (
     <SessionContext.Provider

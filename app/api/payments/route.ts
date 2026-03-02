@@ -1,157 +1,230 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
-import { cookies } from 'next/headers'
+import {
+  parseBooleanParam,
+  requireRoles,
+  getScopedCompanyIds,
+  ensureCompanyAccess,
+  normalizeOptionalString,
+  filterCompanyIdsByRoutePermission
+} from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
+
+const paymentCreateSchema = z
+  .object({
+    companyId: z.string().trim().min(1, 'Company ID is required'),
+    billType: z.enum(['purchase', 'sales']),
+    billId: z.string().trim().min(1, 'Bill ID is required'),
+    payDate: z.string().trim().min(1, 'Pay date is required'),
+    amount: z.coerce.number().positive('Amount must be greater than zero'),
+    mode: z.enum(['cash', 'online', 'bank']),
+    txnRef: z.string().trim().max(100).optional().nullable(),
+    note: z.string().trim().max(400).optional().nullable(),
+    status: z.enum(['pending', 'paid']).optional()
+  })
+  .strict()
 
 export async function POST(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    const body = await request.json()
-    console.log('Received payment body:', JSON.stringify(body, null, 2))
-
-    const {
-      companyId,
-      billType,
-      billId,
-      payDate,
-      amount,
-      mode,
-      txnRef,
-      note
-    } = body
-
-    // Validate required fields
-    if (!companyId || !billType || !billId || !payDate || !amount || !mode) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    const body = await request.json().catch(() => null)
+    const parsed = paymentCreateSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        },
+        { status: 400 }
+      )
     }
 
-    // Get user from cookies
-    const cookieStore = await cookies()
-    const userId = cookieStore.get('userId')?.value || 'test-user'
+    const data = parsed.data
+    const denied = await ensureCompanyAccess(request, data.companyId)
+    if (denied) return denied
 
-    console.log('Recording payment for bill:', billId, 'type:', billType)
-
-    // Get bill details
-    let bill
-    if (billType === 'purchase') {
-      bill = await prisma.purchaseBill.findFirst({
-        where: { id: billId, companyId },
-        include: { farmer: true }
-      })
-    } else {
-      bill = await prisma.salesBill.findFirst({
-        where: { id: billId, companyId },
-        include: { party: true }
-      })
+    const scopedCompanyIds = await getScopedCompanyIds(authResult.auth, data.companyId)
+    const permissionScopedIds = await filterCompanyIdsByRoutePermission(
+      authResult.auth,
+      scopedCompanyIds,
+      request.nextUrl.pathname,
+      request.method
+    )
+    if (!permissionScopedIds.includes(data.companyId)) {
+      return NextResponse.json({ error: 'Company access denied' }, { status: 403 })
     }
+
+    const bill =
+      data.billType === 'purchase'
+        ? await prisma.purchaseBill.findFirst({
+            where: { id: data.billId, companyId: data.companyId },
+            include: { farmer: true }
+          })
+        : await prisma.salesBill.findFirst({
+            where: { id: data.billId, companyId: data.companyId },
+            include: { party: true }
+          })
 
     if (!bill) {
       return NextResponse.json({ error: 'Bill not found' }, { status: 404 })
     }
 
-    // Create payment record
-    const payment = await prisma.payment.create({
-      data: {
-        companyId,
-        billType,
-        billId,
-        billDate: bill.billDate, // Use bill's date
-        payDate: new Date(payDate),
-        amount: parseFloat(amount),
-        mode,
-        txnRef: txnRef || null,
-        note: note || null
-      }
-    })
+    const paidAmount = data.billType === 'purchase' ? (bill as any).paidAmount : (bill as any).receivedAmount
+    const outstanding = Math.max(0, (bill as any).totalAmount - paidAmount)
 
-    console.log('Payment recorded:', payment.id)
-
-    // Update bill amounts
-    const currentPaid = billType === 'purchase' ? (bill as any).paidAmount : (bill as any).receivedAmount
-    const newPaid = currentPaid + parseFloat(amount)
-    const newBalance = (bill as any).totalAmount - newPaid
-    const newStatus = newBalance === 0 ? 'paid' : newBalance === (bill as any).totalAmount ? 'unpaid' : 'partial'
-
-    if (billType === 'purchase') {
-      await prisma.purchaseBill.update({
-        where: { id: billId },
-        data: {
-          paidAmount: newPaid,
-          balanceAmount: newBalance,
-          status: newStatus
-        }
-      })
-    } else {
-      await prisma.salesBill.update({
-        where: { id: billId },
-        data: {
-          receivedAmount: newPaid,
-          balanceAmount: newBalance,
-          status: newStatus
-        }
-      })
+    if (data.amount > outstanding) {
+      return NextResponse.json({ error: 'Payment amount cannot exceed pending balance' }, { status: 400 })
     }
 
-    console.log('Bill updated with new payment')
+    const paymentStatus = data.status || 'paid'
 
-    return NextResponse.json({ success: true, payment })
-  } catch (error) {
-    console.error('Error recording payment:', error)
-    const errorMessage = error instanceof Error ? error.message : 'Internal server error'
-    return NextResponse.json({ error: errorMessage }, { status: 500 })
+    const result = await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          companyId: data.companyId,
+          billType: data.billType,
+          billId: data.billId,
+          billDate: bill.billDate,
+          payDate: new Date(data.payDate),
+          amount: data.amount,
+          mode: data.mode,
+          status: paymentStatus,
+          txnRef: normalizeOptionalString(data.txnRef),
+          note: normalizeOptionalString(data.note),
+          partyId: data.billType === 'sales' ? (bill as any).partyId || null : null,
+          farmerId: data.billType === 'purchase' ? (bill as any).farmerId || null : null
+        }
+      })
+
+      const newPaid = paidAmount + data.amount
+      const newBalance = Math.max(0, (bill as any).totalAmount - newPaid)
+      const billStatus = newBalance === 0 ? 'paid' : newBalance === (bill as any).totalAmount ? 'unpaid' : 'partial'
+
+      if (data.billType === 'purchase') {
+        await tx.purchaseBill.update({
+          where: { id: data.billId },
+          data: {
+            paidAmount: newPaid,
+            balanceAmount: newBalance,
+            status: billStatus
+          }
+        })
+      } else {
+        await tx.salesBill.update({
+          where: { id: data.billId },
+          data: {
+            receivedAmount: newPaid,
+            balanceAmount: newBalance,
+            status: billStatus
+          }
+        })
+      }
+
+      return payment
+    })
+
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action: 'CREATE',
+      resourceType: 'PAYMENT',
+      resourceId: result.id,
+      scope: {
+        traderId: authResult.auth.traderId,
+        companyId: result.companyId
+      },
+      before: null,
+      after: result,
+      requestMeta: getAuditRequestMeta(request)
+    })
+
+    return NextResponse.json({ success: true, payment: result }, { status: 201 })
+  } catch {
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url)
-    const companyId = searchParams.get('companyId')
-    const billType = searchParams.get('billType')
+  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin', 'company_user'])
+  if (!authResult.ok) return authResult.response
 
-    if (!companyId) {
-      return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
+  try {
+    const searchParams = new URL(request.url).searchParams
+    const requestedCompanyId = searchParams.get('companyId')?.trim() || null
+    const billType = searchParams.get('billType')
+    const includeDeleted =
+      authResult.auth.role === 'super_admin' && parseBooleanParam(searchParams.get('includeDeleted'))
+
+    const scopedCompanyIds = await getScopedCompanyIds(authResult.auth, requestedCompanyId)
+    const permissionScopedIds = await filterCompanyIdsByRoutePermission(
+      authResult.auth,
+      scopedCompanyIds,
+      request.nextUrl.pathname,
+      request.method
+    )
+
+    if (requestedCompanyId && permissionScopedIds.length === 0) {
+      return NextResponse.json({ error: 'Missing privilege for requested company' }, { status: 403 })
     }
 
-    let whereClause: any = { companyId }
-    if (billType) {
-      whereClause.billType = billType
+    if (permissionScopedIds.length === 0) {
+      return NextResponse.json([])
     }
 
     const payments = await prisma.payment.findMany({
-      where: whereClause,
+      where: {
+        companyId: { in: permissionScopedIds },
+        ...(billType === 'purchase' || billType === 'sales' ? { billType } : {}),
+        ...(includeDeleted ? {} : { deletedAt: null })
+      },
       include: {
-        party: true
+        party: true,
+        farmer: true
       },
       orderBy: { createdAt: 'desc' }
     })
 
-    // Enhance payment data with bill information
-    const enhancedPayments = await Promise.all(payments.map(async (payment) => {
-      let billNo = ''
-      let partyName = payment.party?.name || ''
+    const purchaseBillIds = payments
+      .filter((payment) => payment.billType === 'purchase')
+      .map((payment) => payment.billId)
+    const salesBillIds = payments
+      .filter((payment) => payment.billType === 'sales')
+      .map((payment) => payment.billId)
 
-      if (payment.billType === 'purchase') {
-        const purchaseBill = await prisma.purchaseBill.findUnique({
-          where: { id: payment.billId },
-          select: { billNo: true }
-        })
-        billNo = purchaseBill?.billNo || ''
-      } else {
-        const salesBill = await prisma.salesBill.findUnique({
-          where: { id: payment.billId },
-          select: { billNo: true }
-        })
-        billNo = salesBill?.billNo || ''
-      }
+    const [purchaseBills, salesBills] = await Promise.all([
+      purchaseBillIds.length > 0
+        ? prisma.purchaseBill.findMany({
+            where: { id: { in: purchaseBillIds } },
+            select: { id: true, billNo: true }
+          })
+        : Promise.resolve([]),
+      salesBillIds.length > 0
+        ? prisma.salesBill.findMany({
+            where: { id: { in: salesBillIds } },
+            select: { id: true, billNo: true }
+          })
+        : Promise.resolve([])
+    ])
 
-      return {
-        ...payment,
-        billNo,
-        partyName
-      }
+    const purchaseBillMap = new Map(purchaseBills.map((bill) => [bill.id, bill.billNo]))
+    const salesBillMap = new Map(salesBills.map((bill) => [bill.id, bill.billNo]))
+
+    const enhancedPayments = payments.map((payment) => ({
+      ...payment,
+      billNo:
+        payment.billType === 'purchase'
+          ? purchaseBillMap.get(payment.billId) || ''
+          : salesBillMap.get(payment.billId) || '',
+      partyName: payment.party?.name || payment.farmer?.name || ''
     }))
 
     return NextResponse.json(enhancedPayments)
-  } catch (error) {
-    console.error('Error fetching payments:', error)
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

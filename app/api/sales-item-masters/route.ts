@@ -1,10 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
+import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
 
-// Temporary in-memory storage for sales items
-// Allows multiple sales items per product
 let salesItemsStore: any[] = []
 let nextId = 1
+
+const postSchema = z.object({
+  companyId: z.string().trim().min(1),
+  productId: z.string().trim().min(1),
+  salesItemName: z.string().trim().min(1),
+  hsnCode: z.string().optional().nullable(),
+  gstRate: z.union([z.number(), z.string()]).optional().nullable(),
+  sellingPrice: z.union([z.number(), z.string()]).optional().nullable(),
+  description: z.string().optional().nullable(),
+  isActive: z.boolean().optional()
+}).strict()
+
+const putSchema = z.object({
+  productId: z.string().trim().min(1).optional(),
+  salesItemName: z.string().trim().min(1).optional(),
+  hsnCode: z.string().optional().nullable(),
+  gstRate: z.union([z.number(), z.string()]).optional().nullable(),
+  sellingPrice: z.union([z.number(), z.string()]).optional().nullable(),
+  description: z.string().optional().nullable(),
+  isActive: z.boolean().optional()
+}).strict()
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,19 +36,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
     }
 
-    // Get products for reference
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     const products = await prisma.product.findMany({
       where: { companyId },
-      include: {
-        unit: true
-      },
+      include: { unit: true },
       orderBy: { name: 'asc' },
     })
 
-    // Get sales items for this company
     const companySalesItems = salesItemsStore.filter(item => item.companyId === companyId)
 
-    // Transform sales items with product info
     const salesItemMasters = companySalesItems.map(salesItem => {
       const product = products.find(p => p.id === salesItem.productId)
       return {
@@ -43,7 +62,7 @@ export async function GET(request: NextRequest) {
         createdAt: salesItem.createdAt,
         updatedAt: salesItem.updatedAt,
       }
-    }).filter(item => item.product !== null) // Only return items with valid products
+    }).filter(item => item.product !== null)
 
     return NextResponse.json(salesItemMasters)
   } catch (error) {
@@ -54,35 +73,31 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { companyId, productId, salesItemName, hsnCode, gstRate, sellingPrice, description, isActive } = body
+    const parsed = await parseJsonWithSchema(request, postSchema)
+    if (!parsed.ok) return parsed.response
 
-    if (!companyId || !productId || !salesItemName) {
-      return NextResponse.json({ error: 'Company ID, Product ID, and Sales Item Name are required' }, { status: 400 })
-    }
+    const denied = await ensureCompanyAccess(request, parsed.data.companyId)
+    if (denied) return denied
 
-    // Create new sales item with unique ID
     const now = new Date()
     const newSalesItem = {
       id: `temp_${nextId++}`,
-      companyId,
-      productId,
-      salesItemName: salesItemName.trim(),
-      hsnCode: hsnCode || null,
-      gstRate: gstRate ? parseFloat(gstRate) : null,
-      sellingPrice: sellingPrice ? parseFloat(sellingPrice) : null,
-      description: description || null,
-      isActive: isActive !== false,
+      companyId: parsed.data.companyId,
+      productId: parsed.data.productId,
+      salesItemName: parsed.data.salesItemName.trim(),
+      hsnCode: parsed.data.hsnCode || null,
+      gstRate: parsed.data.gstRate ? parseFloat(String(parsed.data.gstRate)) : null,
+      sellingPrice: parsed.data.sellingPrice ? parseFloat(String(parsed.data.sellingPrice)) : null,
+      description: parsed.data.description || null,
+      isActive: parsed.data.isActive !== false,
       createdAt: now,
       updatedAt: now,
     }
 
-    // Add to store
     salesItemsStore.push(newSalesItem)
 
-    // Get product info for response
-    const product = await prisma.product.findUnique({
-      where: { id: productId },
+    const product = await prisma.product.findFirst({
+      where: { id: parsed.data.productId, companyId: parsed.data.companyId },
       include: { unit: true }
     })
 
@@ -90,7 +105,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Product not found' }, { status: 404 })
     }
 
-    // Transform to response format
     const salesItemMaster = {
       ...newSalesItem,
       product: product,
@@ -105,8 +119,8 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { productId, salesItemName, hsnCode, gstRate, sellingPrice, description, isActive } = body
+    const parsed = await parseJsonWithSchema(request, putSchema)
+    if (!parsed.ok) return parsed.response
 
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
@@ -116,31 +130,31 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Sales Item Master ID and Company ID are required' }, { status: 400 })
     }
 
-    // Find and update the sales item
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     const itemIndex = salesItemsStore.findIndex(item => item.id === id && item.companyId === companyId)
-    
+
     if (itemIndex === -1) {
       return NextResponse.json({ error: 'Sales Item Master not found' }, { status: 404 })
     }
 
-    // Update the sales item
     const updatedItem = {
       ...salesItemsStore[itemIndex],
-      productId: productId !== undefined ? productId : salesItemsStore[itemIndex].productId,
-      salesItemName: salesItemName !== undefined ? salesItemName.trim() : salesItemsStore[itemIndex].salesItemName,
-      hsnCode: hsnCode !== undefined ? hsnCode : salesItemsStore[itemIndex].hsnCode,
-      gstRate: gstRate !== undefined ? (gstRate ? parseFloat(gstRate) : null) : salesItemsStore[itemIndex].gstRate,
-      sellingPrice: sellingPrice !== undefined ? (sellingPrice ? parseFloat(sellingPrice) : null) : salesItemsStore[itemIndex].sellingPrice,
-      description: description !== undefined ? description : salesItemsStore[itemIndex].description,
-      isActive: isActive !== undefined ? isActive : salesItemsStore[itemIndex].isActive,
+      productId: parsed.data.productId !== undefined ? parsed.data.productId : salesItemsStore[itemIndex].productId,
+      salesItemName: parsed.data.salesItemName !== undefined ? parsed.data.salesItemName.trim() : salesItemsStore[itemIndex].salesItemName,
+      hsnCode: parsed.data.hsnCode !== undefined ? parsed.data.hsnCode : salesItemsStore[itemIndex].hsnCode,
+      gstRate: parsed.data.gstRate !== undefined ? (parsed.data.gstRate ? parseFloat(String(parsed.data.gstRate)) : null) : salesItemsStore[itemIndex].gstRate,
+      sellingPrice: parsed.data.sellingPrice !== undefined ? (parsed.data.sellingPrice ? parseFloat(String(parsed.data.sellingPrice)) : null) : salesItemsStore[itemIndex].sellingPrice,
+      description: parsed.data.description !== undefined ? parsed.data.description : salesItemsStore[itemIndex].description,
+      isActive: parsed.data.isActive !== undefined ? parsed.data.isActive : salesItemsStore[itemIndex].isActive,
       updatedAt: new Date(),
     }
 
     salesItemsStore[itemIndex] = updatedItem
 
-    // Get product info for response
-    const product = await prisma.product.findUnique({
-      where: { id: updatedItem.productId },
+    const product = await prisma.product.findFirst({
+      where: { id: updatedItem.productId, companyId },
       include: { unit: true }
     })
 
@@ -148,7 +162,6 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Product not found' }, { status: 404 })
     }
 
-    // Transform to response format
     const salesItemMaster = {
       ...updatedItem,
       product: product,
@@ -171,7 +184,9 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Sales Item Master ID and Company ID are required' }, { status: 400 })
     }
 
-    // Remove the sales item from store
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     const initialLength = salesItemsStore.length
     salesItemsStore = salesItemsStore.filter(item => !(item.id === id && item.companyId === companyId))
 

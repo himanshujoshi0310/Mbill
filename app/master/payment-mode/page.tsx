@@ -139,6 +139,43 @@ export default function PaymentModeMasterPage() {
     }
   }
 
+  const handleDeleteAll = async () => {
+    if (!confirm('Delete all payment modes for this company?')) return
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/payment-modes?companyId=${companyId}&all=true`, { method: 'DELETE' })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchPaymentModes()
+  }
+
+  const handleAddDummyData = async () => {
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/payment-modes?companyId=${companyId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed: true })
+    })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchPaymentModes()
+  }
+
+  const handleExportCsv = () => {
+    if (paymentModes.length === 0) return alert('No payment mode data to export')
+    const headers = ['Name', 'Code', 'Description', 'Status', 'CreatedAt']
+    const rows = paymentModes.map((p) => [p.name, p.code, p.description || '', p.isActive ? 'Active' : 'Inactive', p.createdAt])
+    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `payment_modes_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   const resetForm = () => {
     setFormData({ name: '', code: '', description: '', isActive: true })
     setEditingPaymentMode(null)
@@ -165,10 +202,15 @@ export default function PaymentModeMasterPage() {
               <CreditCard className="h-8 w-8 text-blue-600" />
               <h1 className="text-3xl font-bold">Payment Mode Master</h1>
             </div>
-            <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Payment Mode
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
+              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
+              <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
+              <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
+                <Plus className="h-4 w-4" />
+                Add Payment Mode
+              </Button>
+            </div>
           </div>
 
           {/* Form */}

@@ -154,6 +154,43 @@ export default function BankMasterPage() {
     }
   }
 
+  const handleDeleteAll = async () => {
+    if (!confirm('Delete all banks for this company?')) return
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/banks?companyId=${companyId}&all=true`, { method: 'DELETE' })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchBanks()
+  }
+
+  const handleAddDummyData = async () => {
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/banks?companyId=${companyId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed: true })
+    })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchBanks()
+  }
+
+  const handleExportCsv = () => {
+    if (banks.length === 0) return alert('No bank data to export')
+    const headers = ['Name', 'Branch', 'IFSC', 'Account', 'Address', 'Phone', 'Status', 'CreatedAt']
+    const rows = banks.map((b) => [b.name, b.branch || '', b.ifscCode, b.accountNumber || '', b.address || '', b.phone || '', b.isActive ? 'Active' : 'Inactive', b.createdAt])
+    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `banks_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   const resetForm = () => {
     setFormData({ 
       name: '', 
@@ -188,10 +225,15 @@ export default function BankMasterPage() {
               <Building className="h-8 w-8 text-green-600" />
               <h1 className="text-3xl font-bold">Bank Master</h1>
             </div>
-            <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Bank
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
+              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
+              <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
+              <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
+                <Plus className="h-4 w-4" />
+                Add Bank
+              </Button>
+            </div>
           </div>
 
           {/* Form */}

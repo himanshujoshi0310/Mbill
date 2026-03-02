@@ -1,5 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { ensureCompanyAccess } from '@/lib/api-security'
+import { z } from 'zod'
+
+const salesItemSchema = z.object({
+  productId: z.string().min(1),
+  weight: z.coerce.number().positive(),
+  bags: z.coerce.number().int().min(0).optional(),
+  rate: z.coerce.number().nonnegative(),
+  amount: z.coerce.number().nonnegative()
+})
+
+const salesInvoiceSchema = z.object({
+  salesBill: z.object({
+    companyId: z.string().min(1),
+    billNo: z.string().min(1),
+    billDate: z.string().min(1),
+    partyId: z.string().min(1),
+    totalAmount: z.coerce.number().nonnegative(),
+    receivedAmount: z.coerce.number().nonnegative().optional(),
+    balanceAmount: z.coerce.number().nonnegative().optional(),
+    status: z.string().optional()
+  }),
+  transportBill: z.object({
+    transportName: z.string().optional().nullable(),
+    lorryNo: z.string().optional().nullable(),
+    freightPerQt: z.coerce.number().nonnegative().optional(),
+    freightAmount: z.coerce.number().nonnegative().optional(),
+    advance: z.coerce.number().nonnegative().optional(),
+    toPay: z.coerce.number().nonnegative().optional()
+  }).optional(),
+  salesItems: z.array(salesItemSchema).min(1)
+})
 
 export async function GET(request: NextRequest) {
   try {
@@ -9,6 +41,8 @@ export async function GET(request: NextRequest) {
     if (!firmId) {
       return NextResponse.json({ error: 'Firm ID is required' }, { status: 400 })
     }
+    const denied = await ensureCompanyAccess(request, firmId)
+    if (denied) return denied
 
     const salesInvoices = await prisma.salesBill.findMany({
       where: { companyId: firmId }, // Use companyId instead of firmId
@@ -32,7 +66,12 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
+    const rawBody = await request.json()
+    const parsed = salesInvoiceSchema.safeParse(rawBody)
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.issues[0]?.message || 'Invalid request data' }, { status: 400 })
+    }
+    const body = parsed.data
     const { 
       salesBill,
       transportBill,
@@ -40,29 +79,11 @@ export async function POST(request: NextRequest) {
     } = body
 
     // Extract sales bill data
-    const {
-      companyId,
-      billNo,
-      billDate,
-      partyId,
-      totalAmount,
-      receivedAmount,
-      balanceAmount,
-      status
-    } = salesBill
+    const { companyId, billNo, billDate, partyId, totalAmount, receivedAmount, balanceAmount, status } = salesBill
 
     // Validation
-    if (!companyId || !billNo || !billDate || !partyId) {
-      return NextResponse.json({ 
-        error: 'Company ID, Bill No, Bill Date, and Party ID are required' 
-      }, { status: 400 })
-    }
-
-    if (!salesItems || salesItems.length === 0) {
-      return NextResponse.json({ 
-        error: 'At least one sales item is required' 
-      }, { status: 400 })
-    }
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
     // Check for duplicate invoice number
     const existingInvoice = await prisma.salesBill.findFirst({
@@ -101,7 +122,7 @@ export async function POST(request: NextRequest) {
             salesBillId: salesBillRecord.id,
             productId: item.productId,
             weight: item.weight,
-            bags: item.bags,
+            bags: item.bags ?? null,
             rate: item.rate,
             amount: item.amount
           }
@@ -116,10 +137,10 @@ export async function POST(request: NextRequest) {
             salesBillId: salesBillRecord.id,
             transportName: transportBill.transportName,
             lorryNo: transportBill.lorryNo,
-            freightPerQt: transportBill.freightPerQt,
-            freightAmount: transportBill.freightAmount,
-            advance: transportBill.advance,
-            toPay: transportBill.toPay
+            freightPerQt: transportBill.freightPerQt ?? 0,
+            freightAmount: transportBill.freightAmount ?? 0,
+            advance: transportBill.advance ?? 0,
+            toPay: transportBill.toPay ?? 0
           }
         })
       }

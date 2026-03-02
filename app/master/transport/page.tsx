@@ -20,7 +20,7 @@ interface Transport {
   vehicleType?: string
   capacity?: string
   description?: string
-  isActive: boolean
+  isActive?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -65,7 +65,12 @@ export default function TransportMasterPage() {
       const response = await fetch(`/api/transports?companyId=${companyId}`)
       if (response.ok) {
         const data = await response.json()
-        setTransports(data)
+        setTransports(
+          (Array.isArray(data) ? data : []).map((item) => ({
+            ...item,
+            isActive: item?.isActive ?? true
+          }))
+        )
       }
     } catch (error) {
       console.error('Error fetching transports:', error)
@@ -117,7 +122,10 @@ export default function TransportMasterPage() {
           ...formData,
           companyId,
           vehicleNumber: formData.vehicleNumber.trim() || null,
-          transporterName: formData.transporterName.trim()
+          transporterName: formData.transporterName.trim(),
+          driverPhone: formData.driverPhone.trim() || null,
+          capacity: formData.capacity === '' ? null : Number(formData.capacity),
+          isActive: !!formData.isActive
         }),
       })
 
@@ -145,7 +153,7 @@ export default function TransportMasterPage() {
       vehicleType: transport.vehicleType || '',
       capacity: transport.capacity || '',
       description: transport.description || '',
-      isActive: transport.isActive
+      isActive: transport.isActive ?? true
     })
     setIsFormOpen(true)
   }
@@ -177,6 +185,43 @@ export default function TransportMasterPage() {
       console.error('Error:', error)
       alert('Delete failed')
     }
+  }
+
+  const handleDeleteAll = async () => {
+    if (!confirm('Delete all transports for this company?')) return
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/transports?companyId=${companyId}&all=true`, { method: 'DELETE' })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchTransports()
+  }
+
+  const handleAddDummyData = async () => {
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/transports?companyId=${companyId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed: true })
+    })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchTransports()
+  }
+
+  const handleExportCsv = () => {
+    if (transports.length === 0) return alert('No transport data to export')
+    const headers = ['Transporter', 'VehicleNumber', 'DriverName', 'DriverPhone', 'Capacity', 'CreatedAt']
+    const rows = transports.map((t) => [t.transporterName || '', t.vehicleNumber || '', t.driverName || '', t.driverPhone || '', t.capacity || '', t.createdAt])
+    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `transports_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   const resetForm = () => {
@@ -214,10 +259,15 @@ export default function TransportMasterPage() {
               <Truck className="h-8 w-8 text-yellow-600" />
               <h1 className="text-3xl font-bold">Transport Master</h1>
             </div>
-            <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Transport
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
+              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
+              <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
+              <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
+                <Plus className="h-4 w-4" />
+                Add Transport
+              </Button>
+            </div>
           </div>
 
           {/* Form */}
@@ -262,8 +312,10 @@ export default function TransportMasterPage() {
                       <Input
                         id="driverPhone"
                         value={formData.driverPhone}
-                        onChange={(e) => setFormData({ ...formData, driverPhone: e.target.value })}
-                        placeholder="Enter driver phone"
+                        onChange={(e) => setFormData({ ...formData, driverPhone: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                        placeholder="Enter 10-digit driver phone"
+                        inputMode="numeric"
+                        maxLength={10}
                       />
                     </div>
                     <div>
@@ -279,8 +331,11 @@ export default function TransportMasterPage() {
                       <Label htmlFor="capacity">Capacity</Label>
                       <Input
                         id="capacity"
+                        type="number"
+                        min="0"
+                        step="0.01"
                         value={formData.capacity}
-                        onChange={(e) => setFormData({ ...formData, capacity: e.target.value })}
+                        onChange={(e) => setFormData({ ...formData, capacity: e.target.value === '' ? '' : String(Math.max(0, Number(e.target.value) || 0)) })}
                         placeholder="Enter capacity"
                       />
                     </div>
@@ -297,7 +352,7 @@ export default function TransportMasterPage() {
                       <input
                         type="checkbox"
                         id="isActive"
-                        checked={formData.isActive}
+                        checked={!!formData.isActive}
                         onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
                         className="h-4 w-4"
                       />
@@ -356,7 +411,7 @@ export default function TransportMasterPage() {
                         <TableCell>{transport.capacity || '-'}</TableCell>
                         <TableCell>
                           <Badge variant={transport.isActive ? 'default' : 'secondary'}>
-                            {transport.isActive ? 'Active' : 'Inactive'}
+                            {(transport.isActive ?? true) ? 'Active' : 'Inactive'}
                           </Badge>
                         </TableCell>
                         <TableCell>

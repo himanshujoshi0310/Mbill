@@ -20,9 +20,27 @@ export default function CompanySelector({ companies }: CompanySelectorProps) {
   const router = useRouter()
 
   const handleSelect = () => {
-    if (selectedCompany) {
-      router.push(`/dashboard?companyId=${selectedCompany}`)
-    }
+    if (!selectedCompany) return
+
+    void (async () => {
+      try {
+        const response = await fetch('/api/auth/company', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ companyId: selectedCompany, force: true })
+        })
+
+        if (!response.ok) {
+          return
+        }
+
+        router.push(`/main/dashboard?companyId=${selectedCompany}&companyIds=${selectedCompany}`)
+      } catch {
+        // Silent fail and keep user on selector page
+      }
+    })()
   }
 
   return (

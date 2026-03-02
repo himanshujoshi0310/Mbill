@@ -1,56 +1,67 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
 import { z } from 'zod'
 import bcrypt from 'bcryptjs'
+import { prisma } from '@/lib/prisma'
+import { normalizeOptionalString, parseBooleanParam, requireRoles } from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
-const prisma = new PrismaClient()
+const createUserSchema = z
+  .object({
+    traderId: z.string().trim().min(1, 'Trader ID is required'),
+    companyId: z.string().trim().min(1, 'Company ID is required'),
+    userId: z.string().trim().min(1, 'User ID is required').max(50),
+    password: z.string().min(6, 'Password must be at least 6 characters'),
+    name: z.string().trim().max(100).optional().nullable(),
+    locked: z.boolean().optional(),
+    active: z.boolean().optional()
+  })
+  .strict()
 
-// Validation schemas
-const createUserSchema = z.object({
-  traderId: z.string().min(1, "Trader ID is required"),
-  userId: z.string().min(1, "User ID is required").max(50),
-  password: z.string().min(6, "Password must be at least 6 characters"),
-  name: z.string().optional(),
-  role: z.enum(["admin", "user"]),
-})
+function normalizeCreatePayload(payload: z.infer<typeof createUserSchema>) {
+  const activeLocked = payload.active === undefined ? undefined : !payload.active
 
-const updateUserSchema = z.object({
-  traderId: z.string().min(1, "Trader ID is required"),
-  userId: z.string().min(1, "User ID is required").max(50),
-  password: z.string().min(6, "Password must be at least 6 characters").optional(),
-  name: z.string().optional(),
-  role: z.enum(["admin", "user"]),
-})
-
-// Helper function to verify super admin authentication
-async function verifySuperAdmin() {
-  const session = await getSession()
-  if (!session || session.role !== 'SUPER_ADMIN') {
-    throw new Error('Unauthorized - Super Admin access required')
+  return {
+    traderId: payload.traderId.trim(),
+    companyId: payload.companyId.trim(),
+    userId: payload.userId.trim().toLowerCase(),
+    password: payload.password,
+    name: normalizeOptionalString(payload.name),
+    role: 'company_user' as const,
+    locked: activeLocked ?? payload.locked ?? false
   }
 }
 
-// GET - List all users
 export async function GET(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
-
-    const { searchParams } = new URL(request.url)
-    const traderId = searchParams.get('traderId')
-    const companyId = searchParams.get('companyId')
-
-    const where: any = {}
-    if (traderId) where.traderId = traderId
-    if (companyId) where.companyId = companyId
+    const searchParams = new URL(request.url).searchParams
+    const includeDeleted = parseBooleanParam(searchParams.get('includeDeleted'))
+    const traderId = searchParams.get('traderId')?.trim()
+    const companyId = searchParams.get('companyId')?.trim()
 
     const users = await prisma.user.findMany({
-      where,
+      where: {
+        ...(includeDeleted ? {} : { deletedAt: null }),
+        ...(traderId ? { traderId } : {}),
+        ...(companyId ? { companyId } : {})
+      },
       include: {
         trader: {
           select: {
             id: true,
-            name: true
+            name: true,
+            locked: true,
+            deletedAt: true
+          }
+        },
+        company: {
+          select: {
+            id: true,
+            name: true,
+            locked: true,
+            deletedAt: true
           }
         }
       },
@@ -59,49 +70,72 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    // Remove password from response
-    const usersWithoutPassword = users.map(({ password, ...user }) => user)
+    const usersWithoutPassword = users.map(({ password, ...user }) => ({
+      ...user,
+      active: !user.locked
+    }))
 
     return NextResponse.json(usersWithoutPassword)
-  } catch (error) {
-    console.error('❌ Error fetching users:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch users' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 })
   }
 }
 
-// POST - Create new user
 export async function POST(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
+    const body = await request.json().catch(() => null)
+    const parsed = createUserSchema.safeParse(body)
 
-    const body = await request.json()
-    const validatedData = createUserSchema.parse(body)
-
-    // Verify trader exists
-    const trader = await prisma.trader.findUnique({
-      where: { id: validatedData.traderId }
-    })
-
-    if (!trader) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Trader not found' },
-        { status: 404 }
+        {
+          error: 'Validation failed',
+          details: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        },
+        { status: 400 }
       )
     }
 
-    // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
+    const normalized = normalizeCreatePayload(parsed.data)
+
+    const trader = await prisma.trader.findFirst({
       where: {
-        traderId_userId: {
-          traderId: validatedData.traderId,
-          userId: validatedData.userId
-        }
+        id: normalized.traderId,
+        deletedAt: null
+      },
+      select: {
+        id: true,
+        locked: true
       }
+    })
+
+    if (!trader) {
+      return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
+    }
+
+    const company = await prisma.company.findFirst({
+      where: {
+        id: normalized.companyId,
+        traderId: normalized.traderId,
+        deletedAt: null
+      },
+      select: { id: true }
+    })
+
+    if (!company) {
+      return NextResponse.json({ error: 'Company not found for this trader' }, { status: 404 })
+    }
+
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        traderId: normalized.traderId,
+        userId: normalized.userId,
+        deletedAt: null
+      },
+      select: { id: true }
     })
 
     if (existingUser) {
@@ -111,16 +145,26 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(validatedData.password, 12)
+    const hashedPassword = await bcrypt.hash(normalized.password, 12)
 
     const user = await prisma.user.create({
       data: {
-        ...validatedData,
-        password: hashedPassword
+        traderId: normalized.traderId,
+        companyId: normalized.companyId,
+        userId: normalized.userId,
+        password: hashedPassword,
+        name: normalized.name,
+        role: normalized.role,
+        locked: normalized.locked
       },
       include: {
         trader: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
+        company: {
           select: {
             id: true,
             name: true
@@ -129,31 +173,32 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    // Remove password from response
     const { password, ...userWithoutPassword } = user
 
-    console.log('✅ User created:', { 
-      traderId: user.traderId, 
-      userId: user.userId, 
-      role: user.role 
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action: user.locked ? 'LOCK' : 'CREATE',
+      resourceType: 'USER',
+      resourceId: user.id,
+      scope: {
+        traderId: user.traderId,
+        companyId: user.companyId
+      },
+      after: userWithoutPassword,
+      requestMeta: getAuditRequestMeta(request)
     })
 
-    return NextResponse.json(userWithoutPassword, { status: 201 })
-  } catch (error) {
-    console.error('❌ Error creating user:', error)
-    
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: error.issues },
-        { status: 400 }
-      )
-    }
-
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to create user' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
+      {
+        ...userWithoutPassword,
+        active: !userWithoutPassword.locked
+      },
+      { status: 201 }
     )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to create user' }, { status: 500 })
   }
 }

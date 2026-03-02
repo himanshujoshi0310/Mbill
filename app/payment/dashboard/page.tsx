@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,9 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Eye, Plus, Download, FileText } from 'lucide-react'
+import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
+import { resolveCompanyId } from '@/lib/company-context'
+import { isAbortError } from '@/lib/http'
 
 interface PurchaseBill {
   id: string
@@ -75,13 +78,14 @@ export default function PaymentDashboardPage() {
   const [showPaymentForm, setShowPaymentForm] = useState(false)
 
   useEffect(() => {
-    fetchData()
+    const controller = new AbortController()
+    void fetchData(controller.signal)
+    return () => controller.abort()
   }, [activeTab])
 
-  const fetchData = async () => {
+  const fetchData = async (signal?: AbortSignal) => {
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyIdParam = urlParams.get('companyId')
+      const companyIdParam = await resolveCompanyId(window.location.search)
 
       if (!companyIdParam) {
         alert('Company not selected')
@@ -91,25 +95,66 @@ export default function PaymentDashboardPage() {
 
       setCompanyId(companyIdParam)
 
-      // Fetch bills based on active tab
-      const billsEndpoint = activeTab === 'purchase' ? 'purchase-bills' : 'sales-bills'
-      const billsResponse = await fetch(`/api/${billsEndpoint}?companyId=${companyIdParam}`)
-      const billsData = await billsResponse.json()
-
-      if (activeTab === 'purchase') {
-        setPurchaseBills(billsData)
-      } else {
-        setSalesBills(billsData)
+      const cacheKey = `payments-dashboard:${companyIdParam}:${activeTab}`
+      const cached = getClientCache<{
+        purchaseBills: PurchaseBill[]
+        salesBills: SalesBill[]
+        payments: Payment[]
+      }>(cacheKey, 10_000)
+      if (cached) {
+        setPurchaseBills(cached.purchaseBills)
+        setSalesBills(cached.salesBills)
+        setPayments(cached.payments)
+        setLoading(false)
       }
 
-      // Fetch payments
-      const paymentsResponse = await fetch(`/api/payments?companyId=${companyIdParam}&billType=${activeTab}`)
-      const paymentsData = await paymentsResponse.json()
+      // Fetch bills based on active tab
+      const billsEndpoint = activeTab === 'purchase' ? 'purchase-bills' : 'sales-bills'
+      const [billsResponse, paymentsResponse] = await Promise.all([
+        fetch(`/api/${billsEndpoint}?companyId=${companyIdParam}`, { signal }),
+        fetch(`/api/payments?companyId=${companyIdParam}&billType=${activeTab}`, { signal })
+      ])
+      if (signal?.aborted) return
+      if (billsResponse.status === 401 || paymentsResponse.status === 401) {
+        setLoading(false)
+        router.push('/login')
+        return
+      }
+      if (billsResponse.status === 403 || paymentsResponse.status === 403) {
+        setPurchaseBills([])
+        setSalesBills([])
+        setPayments([])
+        setLoading(false)
+        return
+      }
+
+      const billsRaw = await billsResponse.json().catch(() => [])
+      const billsData = Array.isArray(billsRaw) ? billsRaw : []
+
+      const nextPurchaseBills = activeTab === 'purchase' ? billsData : purchaseBills
+      const nextSalesBills = activeTab === 'sales' ? billsData : salesBills
+      if (activeTab === 'purchase') {
+        setPurchaseBills(nextPurchaseBills)
+      } else {
+        setSalesBills(nextSalesBills)
+      }
+
+      const paymentsRaw = await paymentsResponse.json().catch(() => [])
+      const paymentsData = Array.isArray(paymentsRaw) ? paymentsRaw : []
       setPayments(paymentsData)
+      setClientCache(cacheKey, {
+        purchaseBills: nextPurchaseBills,
+        salesBills: nextSalesBills,
+        payments: paymentsData
+      })
 
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching data:', error)
+      setPurchaseBills([])
+      setSalesBills([])
+      setPayments([])
       setLoading(false)
     }
   }
@@ -154,7 +199,7 @@ export default function PaymentDashboardPage() {
         setAmount('')
         setTxnRef('')
         setNote('')
-        fetchData() // Refresh data
+        void fetchData() // Refresh data
       } else {
         alert('Error recording payment')
       }
@@ -164,20 +209,25 @@ export default function PaymentDashboardPage() {
     }
   }
 
-  const getCurrentBills = () => activeTab === 'purchase' ? purchaseBills : salesBills
-  const getTotalPending = () => {
-    return getCurrentBills().reduce((sum, bill) => sum + bill.balanceAmount, 0)
-  }
+  const currentBills = useMemo(
+    () => (activeTab === 'purchase' ? purchaseBills : salesBills),
+    [activeTab, purchaseBills, salesBills]
+  )
 
-  const getTotalPaid = () => {
-    return getCurrentBills().reduce((sum, bill) => {
+  const totalPending = useMemo(
+    () => currentBills.reduce((sum, bill) => sum + bill.balanceAmount, 0),
+    [currentBills]
+  )
+
+  const totalPaid = useMemo(() => {
+    return currentBills.reduce((sum, bill) => {
       if (activeTab === 'purchase') {
         return sum + (bill as PurchaseBill).paidAmount
       } else {
         return sum + (bill as SalesBill).receivedAmount
       }
     }, 0)
-  }
+  }, [activeTab, currentBills])
 
   const getBillName = (bill: PurchaseBill | SalesBill) => {
     if (activeTab === 'purchase') {
@@ -217,7 +267,7 @@ export default function PaymentDashboardPage() {
                 <div className="text-center">
                   <p className="text-sm text-gray-600">Total {activeTab === 'purchase' ? 'Purchase' : 'Sales'} Amount</p>
                   <p className="text-2xl font-bold text-blue-600">
-                    ₹{getCurrentBills().reduce((sum, bill) => sum + bill.totalAmount, 0).toFixed(2)}
+                    ₹{currentBills.reduce((sum, bill) => sum + bill.totalAmount, 0).toFixed(2)}
                   </p>
                 </div>
               </CardContent>
@@ -227,7 +277,7 @@ export default function PaymentDashboardPage() {
                 <div className="text-center">
                   <p className="text-sm text-gray-600">Total {activeTab === 'purchase' ? 'Paid' : 'Received'}</p>
                   <p className="text-2xl font-bold text-green-600">
-                    ₹{getTotalPaid().toFixed(2)}
+                    ₹{totalPaid.toFixed(2)}
                   </p>
                 </div>
               </CardContent>
@@ -237,7 +287,7 @@ export default function PaymentDashboardPage() {
                 <div className="text-center">
                   <p className="text-sm text-gray-600">Total Pending</p>
                   <p className="text-2xl font-bold text-red-600">
-                    ₹{getTotalPending().toFixed(2)}
+                    ₹{totalPending.toFixed(2)}
                   </p>
                 </div>
               </CardContent>
@@ -291,7 +341,7 @@ export default function PaymentDashboardPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {getCurrentBills().map((bill) => (
+                    {currentBills.map((bill) => (
                       <TableRow key={bill.id}>
                         <TableCell>{bill.billNo}</TableCell>
                         <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
@@ -391,7 +441,7 @@ export default function PaymentDashboardPage() {
                           <SelectValue placeholder="Select Bill" />
                         </SelectTrigger>
                         <SelectContent>
-                          {getCurrentBills().filter(bill => bill.balanceAmount > 0).map((bill) => (
+                          {currentBills.filter(bill => bill.balanceAmount > 0).map((bill) => (
                             <SelectItem key={bill.id} value={bill.id}>
                               {bill.billNo} - {getBillName(bill)} (Balance: ₹{bill.balanceAmount.toFixed(2)})
                             </SelectItem>

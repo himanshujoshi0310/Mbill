@@ -5,10 +5,10 @@ const idSchema = z.string().min(1, 'ID is required')
 
 // Authentication schemas
 export const loginSchema = z.object({
-  userId: z.string().min(1, 'User ID is required'),
+  userId: z.string().trim().min(1, 'User ID is required'),
   password: z.string().min(1, 'Password is required'),
-  traderId: z.string().optional()
-})
+  traderId: z.string().trim().optional()
+}).strict()
 
 export const createUserSchema = z.object({
   userId: z.string().min(1, 'User ID is required'),

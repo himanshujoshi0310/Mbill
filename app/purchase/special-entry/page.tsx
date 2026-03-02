@@ -8,6 +8,9 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
+import { kgToQuintal, round4, toKg } from '@/lib/unit-conversion'
+import { getCompanyIdFromSearch, resolveCompanyId } from '@/lib/company-context'
+import { isAbortError } from '@/lib/http'
 
 interface Product {
   id: string
@@ -21,10 +24,18 @@ interface Supplier {
   phone1: string
 }
 
+interface UserUnit {
+  id: string
+  name: string
+  symbol: string
+  kgEquivalent: number
+}
+
 export default function SpecialPurchaseEntryPage() {
   const router = useRouter()
   const [products, setProducts] = useState<Product[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [userUnits, setUserUnits] = useState<UserUnit[]>([])
   const [loading, setLoading] = useState(true)
 
   // Form state
@@ -35,6 +46,7 @@ export default function SpecialPurchaseEntryPage() {
   const [supplierAddress, setSupplierAddress] = useState('')
   const [supplierContact, setSupplierContact] = useState('')
   const [selectedProduct, setSelectedProduct] = useState('')
+  const [selectedUserUnit, setSelectedUserUnit] = useState('')
   const [noOfBags, setNoOfBags] = useState('')
   const [weight, setWeight] = useState('')
   const [rate, setRate] = useState('')
@@ -43,46 +55,72 @@ export default function SpecialPurchaseEntryPage() {
   const [grossAmount, setGrossAmount] = useState('')
   const [paidAmount, setPaidAmount] = useState('')
   const [balance, setBalance] = useState('')
+  const toNonNegative = (value: string) => {
+    if (value === '') return ''
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return ''
+    return String(Math.max(0, parsed))
+  }
 
   useEffect(() => {
-    fetchData()
+    const controller = new AbortController()
+    void fetchData(controller.signal)
+    return () => controller.abort()
   }, [])
 
-  const fetchData = async () => {
+  const fetchData = async (signal?: AbortSignal) => {
     try {
-      // Get companyId from URL or context
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyId = urlParams.get('companyId')
-
+      const companyId = await resolveCompanyId(window.location.search)
       if (!companyId) {
         alert('Company not selected')
+        setLoading(false)
         router.push('/company/select')
         return
       }
 
-      // Fetch products
-      const productsRes = await fetch(`/api/products?companyId=${companyId}`)
-      const productsData = await productsRes.json()
-      setProducts(productsData)
+      const [productsRes, suppliersRes, unitsRes] = await Promise.all([
+        fetch(`/api/products?companyId=${companyId}`, { signal }),
+        fetch(`/api/suppliers?companyId=${companyId}`, { signal }),
+        fetch(`/api/units?companyId=${companyId}`, { signal })
+      ])
+      if (signal?.aborted) return
 
-      // Fetch suppliers
-      const suppliersRes = await fetch(`/api/suppliers?companyId=${companyId}`)
-      const suppliersData = await suppliersRes.json()
-      setSuppliers(suppliersData)
+      const productsData = await productsRes.json().catch(() => [])
+      const suppliersData = await suppliersRes.json().catch(() => [])
+      const unitsData = await unitsRes.json().catch(() => [])
+      setProducts(Array.isArray(productsData) ? productsData : [])
+      setSuppliers(Array.isArray(suppliersData) ? suppliersData : [])
+      if (Array.isArray(unitsData)) {
+        setUserUnits(unitsData)
+        const defaultUnit = unitsData.find((unit: UserUnit) => unit.symbol === 'qt') || unitsData[0]
+        setSelectedUserUnit((current) => current || defaultUnit?.id || '')
+      } else {
+        setUserUnits([])
+      }
 
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching data:', error)
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    const bags = parseFloat(noOfBags) || 0
+    const selected = userUnits.find((unit) => unit.id === selectedUserUnit)
+    if (!selected || bags <= 0) return
+    const totalKg = toKg(bags, Number(selected.kgEquivalent || 1))
+    const totalQt = round4(kgToQuintal(totalKg))
+    setWeight(totalQt.toString())
+  }, [noOfBags, selectedUserUnit, userUnits])
 
   // Calculate net amount when weight or rate changes
   useEffect(() => {
     if (weight && rate) {
       const w = parseFloat(weight) || 0
       const r = parseFloat(rate) || 0
-      setNetAmount((w * r).toString())
+      setNetAmount(Math.max(0, w * r).toString())
     } else {
       setNetAmount('')
     }
@@ -93,7 +131,7 @@ export default function SpecialPurchaseEntryPage() {
     if (netAmount && otherAmount) {
       const net = parseFloat(netAmount) || 0
       const other = parseFloat(otherAmount) || 0
-      setGrossAmount((net + other).toString())
+      setGrossAmount(Math.max(0, net + other).toString())
     } else if (netAmount) {
       setGrossAmount(netAmount)
     } else {
@@ -106,7 +144,7 @@ export default function SpecialPurchaseEntryPage() {
     if (grossAmount && paidAmount) {
       const gross = parseFloat(grossAmount) || 0
       const paid = parseFloat(paidAmount) || 0
-      setBalance((gross - paid).toString())
+      setBalance(Math.max(0, gross - paid).toString())
     } else {
       setBalance('')
     }
@@ -135,8 +173,12 @@ export default function SpecialPurchaseEntryPage() {
     }
 
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyId = urlParams.get('companyId')
+      const companyId = await resolveCompanyId(window.location.search)
+      if (!companyId) {
+        alert('Company not selected')
+        router.push('/company/select')
+        return
+      }
 
       const response = await fetch('/api/suppliers', {
         method: 'POST',
@@ -152,9 +194,17 @@ export default function SpecialPurchaseEntryPage() {
       })
 
       if (response.ok) {
-        const newSupplier = await response.json()
-        setSuppliers([...suppliers, newSupplier])
+        const result = await response.json()
+        const newSupplier = result?.supplier ?? result
+        if (!newSupplier?.id) {
+          alert(result?.error || 'Supplier created but invalid response received')
+          return
+        }
+        setSuppliers((prev) => [...prev, newSupplier])
         setSelectedSupplier(newSupplier.id)
+        setSupplierName(newSupplier.name || '')
+        setSupplierAddress(newSupplier.address || '')
+        setSupplierContact(newSupplier.phone1 || '')
         alert('Supplier added successfully!')
       } else {
         const error = await response.json()
@@ -174,10 +224,18 @@ export default function SpecialPurchaseEntryPage() {
       alert('Please fill all required fields')
       return
     }
+    if (supplierContact && supplierContact.length !== 10) {
+      alert('Supplier contact must be exactly 10 digits')
+      return
+    }
 
     // Payment validation
     const gross = parseFloat(grossAmount) || 0
     const paid = parseFloat(paidAmount) || 0
+    if (gross < 0 || paid < 0) {
+      alert('Amounts cannot be negative')
+      return
+    }
 
     // Check if paid amount exceeds gross amount
     if (paid > gross) {
@@ -196,8 +254,12 @@ export default function SpecialPurchaseEntryPage() {
     }
 
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyId = urlParams.get('companyId')
+      const companyId = await resolveCompanyId(window.location.search)
+      if (!companyId) {
+        alert('Company not selected')
+        router.push('/company/select')
+        return
+      }
 
       const requestData = {
         companyId,
@@ -207,18 +269,16 @@ export default function SpecialPurchaseEntryPage() {
         supplierAddress,
         supplierContact,
         productId: selectedProduct,
-        noOfBags: parseFloat(noOfBags) || 0,
-        weight: parseFloat(weight),
-        rate: parseFloat(rate),
-        netAmount: parseFloat(netAmount),
-        otherAmount: parseFloat(otherAmount) || 0,
-        grossAmount: parseFloat(grossAmount),
-        paidAmount: parseFloat(paidAmount) || 0,
-        balance: parseFloat(balance) || 0,
+        noOfBags: Math.max(0, parseFloat(noOfBags) || 0),
+        weight: Math.max(0, parseFloat(weight) || 0),
+        rate: Math.max(0, parseFloat(rate) || 0),
+        netAmount: Math.max(0, parseFloat(netAmount) || 0),
+        otherAmount: Math.max(0, parseFloat(otherAmount) || 0),
+        grossAmount: Math.max(0, parseFloat(grossAmount) || 0),
+        paidAmount: Math.max(0, parseFloat(paidAmount) || 0),
+        balance: Math.max(0, parseFloat(balance) || 0),
         paymentStatus,
       }
-
-      console.log('Sending special purchase request data:', requestData)
 
       const response = await fetch('/api/special-purchase-bills', {
         method: 'POST',
@@ -228,13 +288,11 @@ export default function SpecialPurchaseEntryPage() {
         body: JSON.stringify(requestData),
       })
 
-      console.log('Response status:', response.status)
       const responseData = await response.json()
-      console.log('Response data:', responseData)
 
       if (response.ok) {
         alert('Special purchase bill created successfully!')
-        router.push('/dashboard?companyId=' + companyId)
+        router.push('/main/dashboard?companyId=' + companyId)
       } else {
         alert('Error creating special purchase bill: ' + (responseData.error || 'Unknown error'))
       }
@@ -252,8 +310,7 @@ export default function SpecialPurchaseEntryPage() {
     )
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
+  const companyId = getCompanyIdFromSearch(window.location.search)
 
   return (
     <DashboardLayout companyId={companyId}>
@@ -299,14 +356,25 @@ export default function SpecialPurchaseEntryPage() {
                           <SelectValue placeholder="Select Supplier" />
                         </SelectTrigger>
                         <SelectContent>
-                          {suppliers.map((supplier) => (
+                          {suppliers
+                            .filter((supplier, index, self) => !!supplier?.id && index === self.findIndex((s) => s.id === supplier.id))
+                            .map((supplier) => (
                             <SelectItem key={supplier.id} value={supplier.id}>
                               {supplier.name}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <Button type="button" variant="outline" onClick={() => setSelectedSupplier('')}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setSelectedSupplier('')
+                          setSupplierName('')
+                          setSupplierAddress('')
+                          setSupplierContact('')
+                        }}
+                      >
                         New
                       </Button>
                     </div>
@@ -343,7 +411,9 @@ export default function SpecialPurchaseEntryPage() {
                     <Input
                       id="supplierContact"
                       value={supplierContact}
-                      onChange={(e) => setSupplierContact(e.target.value)}
+                      maxLength={10}
+                      pattern="[0-9]{10}"
+                      onChange={(e) => setSupplierContact(e.target.value.replace(/\D/g, '').slice(0, 10))}
                       placeholder="Enter supplier contact"
                       disabled={selectedSupplier !== ''}
                     />
@@ -381,21 +451,40 @@ export default function SpecialPurchaseEntryPage() {
                     <Input
                       id="noOfBags"
                       type="number"
+                      min="0"
                       value={noOfBags}
-                      onChange={(e) => setNoOfBags(e.target.value)}
+                      onChange={(e) => setNoOfBags(toNonNegative(e.target.value))}
                       placeholder="Enter number of bags"
                     />
                   </div>
 
+                  {/* User Unit */}
+                  <div>
+                    <Label htmlFor="userUnit">User Unit (for conversion)</Label>
+                    <Select value={selectedUserUnit} onValueChange={setSelectedUserUnit}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select Unit e.g. Bag 90KG" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {userUnits.map((unit) => (
+                          <SelectItem key={unit.id} value={unit.id}>
+                            {unit.name} ({unit.symbol}) = {Number(unit.kgEquivalent || 0).toFixed(4)} KG
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
                   {/* Weight */}
                   <div>
-                    <Label htmlFor="weight">Weight</Label>
+                    <Label htmlFor="weight">Weight (Quintal, Universal Base)</Label>
                     <Input
                       id="weight"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={weight}
-                      onChange={(e) => setWeight(e.target.value)}
+                      onChange={(e) => setWeight(toNonNegative(e.target.value))}
                       placeholder="Enter weight"
                       required
                     />
@@ -407,9 +496,10 @@ export default function SpecialPurchaseEntryPage() {
                     <Input
                       id="rate"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={rate}
-                      onChange={(e) => setRate(e.target.value)}
+                      onChange={(e) => setRate(toNonNegative(e.target.value))}
                       placeholder="Enter rate"
                       required
                     />
@@ -433,9 +523,10 @@ export default function SpecialPurchaseEntryPage() {
                     <Input
                       id="otherAmount"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={otherAmount}
-                      onChange={(e) => setOtherAmount(e.target.value)}
+                      onChange={(e) => setOtherAmount(toNonNegative(e.target.value))}
                       placeholder="Enter other amount"
                     />
                   </div>
@@ -458,9 +549,10 @@ export default function SpecialPurchaseEntryPage() {
                     <Input
                       id="paidAmount"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={paidAmount}
-                      onChange={(e) => setPaidAmount(e.target.value)}
+                      onChange={(e) => setPaidAmount(toNonNegative(e.target.value))}
                       placeholder="Enter paid amount"
                     />
                   </div>

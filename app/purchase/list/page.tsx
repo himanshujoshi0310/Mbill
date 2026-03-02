@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,9 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Eye, Edit, Trash2, Printer, FileText, Download, CreditCard } from 'lucide-react'
+import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
+import { resolveCompanyId } from '@/lib/company-context'
+import { isAbortError } from '@/lib/http'
 
 interface Farmer {
   id: string
@@ -73,7 +76,6 @@ type PurchaseBill = RegularPurchaseBill | SpecialPurchaseBill
 export default function PurchaseListPage() {
   const router = useRouter()
   const [purchaseBills, setPurchaseBills] = useState<PurchaseBill[]>([])
-  const [filteredBills, setFilteredBills] = useState<PurchaseBill[]>([])
   const [loading, setLoading] = useState(true)
   const [companyId, setCompanyId] = useState('')
 
@@ -90,17 +92,14 @@ export default function PurchaseListPage() {
   const [purchaseType, setPurchaseType] = useState<'all' | 'regular' | 'special'>('all')
 
   useEffect(() => {
-    fetchPurchaseBills()
+    const controller = new AbortController()
+    void fetchPurchaseBills(controller.signal)
+    return () => controller.abort()
   }, [])
 
-  useEffect(() => {
-    applyFilters()
-  }, [purchaseBills, billNumber, partyName, partyAddress, dateFrom, dateTo, weight, rate, registrationNumber, payable, purchaseType])
-
-  const fetchPurchaseBills = async () => {
+  const fetchPurchaseBills = async (signal?: AbortSignal) => {
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyIdParam = urlParams.get('companyId')
+      const companyIdParam = await resolveCompanyId(window.location.search)
 
       if (!companyIdParam) {
         alert('Company not selected')
@@ -110,14 +109,36 @@ export default function PurchaseListPage() {
 
       setCompanyId(companyIdParam)
 
+      const cacheKey = `purchase-bills:${companyIdParam}`
+      const cached = getClientCache<PurchaseBill[]>(cacheKey, 15_000)
+      if (cached) {
+        setPurchaseBills(cached)
+        setLoading(false)
+      }
+
       // Fetch both regular and special purchase bills
       const [regularResponse, specialResponse] = await Promise.all([
-        fetch(`/api/purchase-bills?companyId=${companyIdParam}`),
-        fetch(`/api/special-purchase-bills?companyId=${companyIdParam}`)
+        fetch(`/api/purchase-bills?companyId=${companyIdParam}`, { signal }),
+        fetch(`/api/special-purchase-bills?companyId=${companyIdParam}`, { signal })
       ])
+      if (signal?.aborted) return
 
-      const regularData = await regularResponse.json()
-      const specialData = await specialResponse.json()
+      if (regularResponse.status === 401 || specialResponse.status === 401) {
+        setLoading(false)
+        router.push('/login')
+        return
+      }
+
+      if (regularResponse.status === 403 || specialResponse.status === 403) {
+        setPurchaseBills([])
+        setLoading(false)
+        return
+      }
+
+      const regularRaw = await regularResponse.json().catch(() => [])
+      const specialRaw = await specialResponse.json().catch(() => [])
+      const regularData = Array.isArray(regularRaw) ? regularRaw : []
+      const specialData = Array.isArray(specialRaw) ? specialRaw : []
 
       // Add type field to distinguish between regular and special purchases
       const regularBills = regularData.map((bill: any) => ({ ...bill, type: 'regular' as const }))
@@ -129,15 +150,17 @@ export default function PurchaseListPage() {
       )
 
       setPurchaseBills(allBills)
-      setFilteredBills(allBills)
+      setClientCache(cacheKey, allBills)
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching purchase bills:', error)
+      setPurchaseBills([])
       setLoading(false)
     }
   }
 
-  const applyFilters = () => {
+  const filteredBills = useMemo(() => {
     let filtered = purchaseBills
 
     // Filter by purchase type
@@ -208,8 +231,8 @@ export default function PurchaseListPage() {
       filtered = filtered.filter(bill => bill.totalAmount.toString().includes(payable))
     }
 
-    setFilteredBills(filtered)
-  }
+    return filtered
+  }, [purchaseBills, billNumber, partyName, partyAddress, dateFrom, dateTo, weight, rate, registrationNumber, payable, purchaseType])
 
   const clearFilters = () => {
     setBillNumber('')
@@ -271,7 +294,7 @@ export default function PurchaseListPage() {
       if (response.ok) {
         const billType = bill.type === 'regular' ? 'Purchase' : 'Special Purchase'
         alert(`${billType} bill deleted successfully!`)
-        fetchPurchaseBills() // Refresh the list
+        void fetchPurchaseBills() // Refresh the list
       } else {
         const errorData = await response.json()
         alert('Error deleting bill: ' + (errorData.error || 'Unknown error'))
@@ -283,34 +306,156 @@ export default function PurchaseListPage() {
   }
 
   const handlePrint = (bill: PurchaseBill) => {
-    // TODO: Implement print functionality
-    console.log('Print bill:', bill.id)
+    void bill
+  }
+
+  const getBillWeightQt = (bill: PurchaseBill) => {
+    if (bill.type === 'regular') {
+      return bill.purchaseItems.reduce((sum, item) => sum + Number(item.qty || 0), 0)
+    }
+    return bill.specialPurchaseItems.reduce((sum, item) => sum + Number(item.weight || 0), 0)
+  }
+
+  const getBillRate = (bill: PurchaseBill) => {
+    if (bill.type === 'regular') {
+      return bill.purchaseItems.length > 0 ? Number(bill.purchaseItems[0].rate || 0) : 0
+    }
+    return bill.specialPurchaseItems.length > 0 ? Number(bill.specialPurchaseItems[0].rate || 0) : 0
+  }
+
+  const csvEscape = (value: string | number) => {
+    const str = String(value ?? '')
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
+  const downloadTextFile = (name: string, content: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   }
 
   const exportToExcel = () => {
-    // TODO: Implement Excel export
-    console.log('Export to Excel')
+    if (filteredBills.length === 0) {
+      alert('No purchase bills to export')
+      return
+    }
+
+    const rows = [
+      [
+        'Type',
+        'Bill/Invoice No',
+        'Date',
+        'Party Name',
+        'Party Address',
+        'Registration Number',
+        'Weight (Qt)',
+        'Rate',
+        'Payable',
+        'Paid',
+        'Balance',
+        'Status'
+      ],
+      ...filteredBills.map((bill) => [
+        bill.type === 'regular' ? 'Farmer' : 'Supplier',
+        bill.type === 'regular' ? bill.billNo : bill.supplierInvoiceNo,
+        new Date(bill.billDate).toLocaleDateString(),
+        bill.type === 'regular' ? bill.farmer.name : bill.supplier.name,
+        bill.type === 'regular' ? bill.farmer.address : bill.supplier.address,
+        bill.type === 'regular' ? bill.farmer.krashakAnubandhNumber : bill.supplier.gstNumber,
+        getBillWeightQt(bill).toFixed(2),
+        getBillRate(bill).toFixed(2),
+        Number(bill.totalAmount || 0).toFixed(2),
+        Number(bill.paidAmount || 0).toFixed(2),
+        Number(bill.balanceAmount || 0).toFixed(2),
+        bill.status
+      ])
+    ]
+    const csv = rows.map((row) => row.map(csvEscape).join(',')).join('\n')
+    downloadTextFile(`purchase-list-${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv;charset=utf-8;')
   }
 
   const exportToPdf = () => {
-    // TODO: Implement PDF export
-    console.log('Export to PDF')
+    if (filteredBills.length === 0) {
+      alert('No purchase bills to export')
+      return
+    }
+    const popup = window.open('', '_blank', 'width=1200,height=900')
+    if (!popup) {
+      alert('Please allow popups to export PDF')
+      return
+    }
+
+    const bodyRows = filteredBills
+      .map((bill) => {
+        const billNo = bill.type === 'regular' ? bill.billNo : bill.supplierInvoiceNo
+        const partyName = bill.type === 'regular' ? bill.farmer.name : bill.supplier.name
+        return `<tr>
+          <td>${bill.type === 'regular' ? 'Farmer' : 'Supplier'}</td>
+          <td>${billNo}</td>
+          <td>${new Date(bill.billDate).toLocaleDateString()}</td>
+          <td>${partyName}</td>
+          <td style="text-align:right">${getBillWeightQt(bill).toFixed(2)}</td>
+          <td style="text-align:right">${getBillRate(bill).toFixed(2)}</td>
+          <td style="text-align:right">₹${Number(bill.totalAmount || 0).toFixed(2)}</td>
+          <td style="text-align:right">₹${Number(bill.paidAmount || 0).toFixed(2)}</td>
+          <td style="text-align:right">₹${Number(bill.balanceAmount || 0).toFixed(2)}</td>
+          <td>${bill.status}</td>
+        </tr>`
+      })
+      .join('')
+
+    popup.document.write(`<!doctype html>
+<html>
+  <head>
+    <title>Purchase List</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 16px; }
+      h1 { margin: 0 0 12px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { border: 1px solid #d1d5db; padding: 6px; }
+      th { background: #f3f4f6; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <h1>Purchase List</h1>
+    <p>Generated: ${new Date().toLocaleString()}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th><th>Bill</th><th>Date</th><th>Party</th><th>Weight (Qt)</th><th>Rate</th><th>Payable</th><th>Paid</th><th>Balance</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  </body>
+</html>`)
+    popup.document.close()
+    popup.focus()
+    popup.print()
   }
 
-  const getTotalBills = () => filteredBills.length
-  const getTotalAmount = () => filteredBills.reduce((sum, bill) => sum + bill.totalAmount, 0)
-  const getRegularBillsCount = () => filteredBills.filter(bill => bill.type === 'regular').length
-  const getSpecialBillsCount = () => filteredBills.filter(bill => bill.type === 'special').length
+  const totalBills = filteredBills.length
+  const totalAmount = useMemo(() => filteredBills.reduce((sum, bill) => sum + bill.totalAmount, 0), [filteredBills])
+  const regularBillsCount = useMemo(
+    () => filteredBills.filter((bill) => bill.type === 'regular').length,
+    [filteredBills]
+  )
+  const specialBillsCount = useMemo(
+    () => filteredBills.filter((bill) => bill.type === 'special').length,
+    [filteredBills]
+  )
 
-  const getTotalWeight = () => {
-    return filteredBills.reduce((sum, bill) => {
-      if (bill.type === 'regular') {
-        return sum + bill.purchaseItems.reduce((itemSum, item) => itemSum + item.qty, 0)
-      } else {
-        return sum + bill.specialPurchaseItems.reduce((itemSum, item) => itemSum + item.weight, 0)
-      }
-    }, 0)
-  }
+  const totalWeightQt = useMemo(() => filteredBills.reduce((sum, bill) => sum + getBillWeightQt(bill), 0), [filteredBills])
+  const totalWeightKg = useMemo(() => totalWeightQt * 100, [totalWeightQt])
 
   if (loading) {
     return (
@@ -434,7 +579,7 @@ export default function PurchaseListPage() {
               </div>
             </div>
             <div className="flex gap-2 mt-4">
-              <Button onClick={applyFilters}>Show</Button>
+              <Button disabled>Auto</Button>
               <Button variant="outline" onClick={clearFilters}>Clear</Button>
               <Button variant="outline" onClick={exportToExcel}>
                 <Download className="w-4 h-4 mr-2" />
@@ -498,16 +643,10 @@ export default function PurchaseListPage() {
                         }
                       </TableCell>
                       <TableCell>
-                        {bill.type === 'regular' 
-                          ? bill.purchaseItems.reduce((sum, item) => sum + item.qty, 0)
-                          : bill.specialPurchaseItems.reduce((sum, item) => sum + item.weight, 0)
-                        }
+                        {getBillWeightQt(bill).toFixed(2)}
                       </TableCell>
                       <TableCell>
-                        {bill.type === 'regular' 
-                          ? (bill.purchaseItems.length > 0 ? bill.purchaseItems[0].rate : 0)
-                          : (bill.specialPurchaseItems.length > 0 ? bill.specialPurchaseItems[0].rate : 0)
-                        }
+                        {getBillRate(bill).toFixed(2)}
                       </TableCell>
                       <TableCell>₹{bill.totalAmount.toFixed(2)}</TableCell>
                       <TableCell>₹{bill.paidAmount.toFixed(2)}</TableCell>
@@ -576,25 +715,26 @@ export default function PurchaseListPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="text-center">
                 <div className="text-sm text-gray-600">Total Bills</div>
-                <div className="text-lg font-semibold">{getTotalBills()}</div>
+                <div className="text-lg font-semibold">{totalBills}</div>
               </div>
               <div className="text-center">
                 <div className="text-sm text-gray-600">Regular Purchase</div>
-                <div className="text-lg font-semibold">{getRegularBillsCount()}</div>
+                <div className="text-lg font-semibold">{regularBillsCount}</div>
               </div>
               <div className="text-center">
                 <div className="text-sm text-gray-600">Special Purchase</div>
-                <div className="text-lg font-semibold">{getSpecialBillsCount()}</div>
+                <div className="text-lg font-semibold">{specialBillsCount}</div>
               </div>
               <div className="text-center">
                 <div className="text-sm text-gray-600">Total Amount</div>
-                <div className="text-lg font-semibold">₹{getTotalAmount().toFixed(2)}</div>
+                <div className="text-lg font-semibold">₹{totalAmount.toFixed(2)}</div>
               </div>
             </div>
             <div className="mt-4 pt-4 border-t">
               <div className="text-center">
                 <div className="text-sm text-gray-600">Total Weight</div>
-                <div className="text-lg font-semibold">{getTotalWeight().toFixed(2)} kg</div>
+                <div className="text-lg font-semibold">{totalWeightQt.toFixed(2)} qt</div>
+                <div className="text-xs text-gray-500">{totalWeightKg.toFixed(2)} kg</div>
               </div>
             </div>
           </CardContent>

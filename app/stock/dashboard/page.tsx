@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,9 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Eye, Plus, Minus, Download, FileText, TrendingUp, TrendingDown } from 'lucide-react'
+import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
+import { resolveCompanyId } from '@/lib/company-context'
+import { isAbortError } from '@/lib/http'
 
 interface Product {
   id: string
@@ -48,7 +51,6 @@ export default function StockDashboardPage() {
   const router = useRouter()
   const [products, setProducts] = useState<Product[]>([])
   const [stockLedger, setStockLedger] = useState<StockLedger[]>([])
-  const [stockSummary, setStockSummary] = useState<StockSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [companyId, setCompanyId] = useState('')
 
@@ -67,13 +69,14 @@ export default function StockDashboardPage() {
   const [dateTo, setDateTo] = useState('')
 
   useEffect(() => {
-    fetchData()
+    const controller = new AbortController()
+    void fetchData(controller.signal)
+    return () => controller.abort()
   }, [])
 
-  const fetchData = async () => {
+  const fetchData = async (signal?: AbortSignal) => {
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyIdParam = urlParams.get('companyId')
+      const companyIdParam = await resolveCompanyId(window.location.search)
 
       if (!companyIdParam) {
         alert('Company not selected')
@@ -83,31 +86,56 @@ export default function StockDashboardPage() {
 
       setCompanyId(companyIdParam)
 
+      const cacheKey = `stock-dashboard:${companyIdParam}`
+      const cached = getClientCache<{ products: Product[]; stockLedger: StockLedger[] }>(cacheKey, 15_000)
+      if (cached) {
+        setProducts(cached.products)
+        setStockLedger(cached.stockLedger)
+        setLoading(false)
+      }
+
       // Fetch products
-      const productsResponse = await fetch(`/api/products?companyId=${companyIdParam}`)
-      const productsData = await productsResponse.json()
+      const [productsResponse, ledgerResponse] = await Promise.all([
+        fetch(`/api/products?companyId=${companyIdParam}`, { signal }),
+        fetch(`/api/stock-ledger?companyId=${companyIdParam}`, { signal })
+      ])
+      if (signal?.aborted) return
+      if (productsResponse.status === 401 || ledgerResponse.status === 401) {
+        setLoading(false)
+        router.push('/login')
+        return
+      }
+      if (productsResponse.status === 403 || ledgerResponse.status === 403) {
+        setProducts([])
+        setStockLedger([])
+        setLoading(false)
+        return
+      }
+      const [productsRaw, ledgerRaw] = await Promise.all([
+        productsResponse.json().catch(() => []),
+        ledgerResponse.json().catch(() => [])
+      ])
+      const productsData = Array.isArray(productsRaw) ? productsRaw : []
+      const ledgerData = Array.isArray(ledgerRaw) ? ledgerRaw : []
       setProducts(productsData)
-
-      // Fetch stock ledger
-      const ledgerResponse = await fetch(`/api/stock-ledger?companyId=${companyIdParam}`)
-      const ledgerData = await ledgerResponse.json()
       setStockLedger(ledgerData)
-
-      // Calculate stock summary
-      calculateStockSummary(ledgerData, productsData)
+      setClientCache(cacheKey, { products: productsData, stockLedger: ledgerData })
 
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching data:', error)
+      setProducts([])
+      setStockLedger([])
       setLoading(false)
     }
   }
 
-  const calculateStockSummary = (ledger: StockLedger[], productList: Product[]) => {
+  const stockSummary = useMemo(() => {
     const summary: { [key: string]: StockSummary } = {}
 
     // Initialize summary for all products
-    productList.forEach(product => {
+    products.forEach(product => {
       summary[product.id] = {
         productId: product.id,
         productName: product.name,
@@ -120,7 +148,7 @@ export default function StockDashboardPage() {
     })
 
     // Calculate totals from ledger
-    ledger.forEach(entry => {
+    stockLedger.forEach(entry => {
       if (summary[entry.product.id]) {
         summary[entry.product.id].totalIn += entry.qtyIn
         summary[entry.product.id].totalOut += entry.qtyOut
@@ -132,8 +160,8 @@ export default function StockDashboardPage() {
       summary[productId].closingStock = summary[productId].totalIn - summary[productId].totalOut
     })
 
-    setStockSummary(Object.values(summary))
-  }
+    return Object.values(summary)
+  }, [products, stockLedger])
 
   const handleStockAdjustment = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -170,7 +198,7 @@ export default function StockDashboardPage() {
         setSelectedProduct('')
         setQuantity('')
         setReason('')
-        fetchData() // Refresh data
+        void fetchData() // Refresh data
       } else {
         alert('Error recording stock adjustment')
       }
@@ -180,7 +208,7 @@ export default function StockDashboardPage() {
     }
   }
 
-  const getFilteredLedger = () => {
+  const filteredLedger = useMemo(() => {
     let filtered = stockLedger
 
     if (filterProduct) {
@@ -200,15 +228,16 @@ export default function StockDashboardPage() {
     }
 
     return filtered.sort((a, b) => new Date(b.entryDate).getTime() - new Date(a.entryDate).getTime())
-  }
+  }, [stockLedger, filterProduct, filterType, dateFrom, dateTo])
 
-  const getTotalStockValue = () => {
-    return stockSummary.reduce((sum, stock) => sum + stock.closingStock, 0)
-  }
-
-  const getLowStockProducts = () => {
-    return stockSummary.filter(stock => stock.closingStock <= 0).length
-  }
+  const totalStockValue = useMemo(
+    () => stockSummary.reduce((sum, stock) => sum + stock.closingStock, 0),
+    [stockSummary]
+  )
+  const lowStockProducts = useMemo(
+    () => stockSummary.filter((stock) => stock.closingStock <= 0).length,
+    [stockSummary]
+  )
 
   if (loading) {
     return (
@@ -251,7 +280,7 @@ export default function StockDashboardPage() {
               <CardContent className="pt-6">
                 <div className="text-center">
                   <p className="text-sm text-gray-600">Total Stock</p>
-                  <p className="text-2xl font-bold text-green-600">{getTotalStockValue().toFixed(2)}</p>
+                  <p className="text-2xl font-bold text-green-600">{totalStockValue.toFixed(2)}</p>
                 </div>
               </CardContent>
             </Card>
@@ -259,7 +288,7 @@ export default function StockDashboardPage() {
               <CardContent className="pt-6">
                 <div className="text-center">
                   <p className="text-sm text-gray-600">Low Stock Items</p>
-                  <p className="text-2xl font-bold text-red-600">{getLowStockProducts()}</p>
+                  <p className="text-2xl font-bold text-red-600">{lowStockProducts}</p>
                 </div>
               </CardContent>
             </Card>
@@ -401,7 +430,7 @@ export default function StockDashboardPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {getFilteredLedger().map((entry) => (
+                    {filteredLedger.map((entry) => (
                       <TableRow key={entry.id}>
                         <TableCell>{new Date(entry.entryDate).toLocaleDateString()}</TableCell>
                         <TableCell>{entry.product.name}</TableCell>

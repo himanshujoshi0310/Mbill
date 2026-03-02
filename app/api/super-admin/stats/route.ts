@@ -1,17 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
-
-const prisma = new PrismaClient()
+import { prisma } from '@/lib/prisma'
+import { requireRoles } from '@/lib/api-security'
 
 export async function GET(request: NextRequest) {
   try {
-    // Verify super admin authentication using the same session system
-    const session = await getSession()
-    
-    if (!session || session.role !== 'super_admin') {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    const authResult = requireRoles(request, ['super_admin'])
+    if (!authResult.ok) return authResult.response
 
     // Get system statistics (read-only)
     const [
@@ -21,9 +15,9 @@ export async function GET(request: NextRequest) {
       purchaseBillCount,
       salesBillCount
     ] = await Promise.all([
-      prisma.trader.count(),
-      prisma.company.count(),
-      prisma.user.count(),
+      prisma.trader.count({ where: { deletedAt: null } }),
+      prisma.company.count({ where: { deletedAt: null } }),
+      prisma.user.count({ where: { deletedAt: null } }),
       prisma.purchaseBill.count(),
       prisma.salesBill.count()
     ])
@@ -38,14 +32,12 @@ export async function GET(request: NextRequest) {
       lastUpdated: new Date().toISOString()
     }
 
-    console.log('Super admin stats accessed:', stats)
     return NextResponse.json(stats)
 
   } catch (error) {
-    console.error('Super admin stats error:', error)
+    void error
     return NextResponse.json({ 
-      error: 'Failed to load statistics',
-      details: error instanceof Error ? error.message : 'Unknown error'
+      error: 'Failed to load statistics'
     }, { status: 500 })
   }
 }

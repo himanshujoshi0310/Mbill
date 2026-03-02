@@ -1,47 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requireRoles } from '@/lib/api-security'
+import { env } from '@/lib/config'
 
 export async function GET(request: NextRequest) {
+  if (env.NODE_ENV !== 'development') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    console.log('Testing purchase bills API...')
-    
-    // Test basic connection
     const billCount = await prisma.purchaseBill.count()
-    console.log('Total purchase bills in database:', billCount)
-    
-    // Test with company filter
     const { searchParams } = new URL(request.url)
     const companyId = searchParams.get('companyId')
-    
+
     if (companyId) {
       const companyBills = await prisma.purchaseBill.findMany({
         where: { companyId },
         include: {
-          farmer: true,
+          farmer: true
         },
-        take: 5, // Limit to 5 for testing
+        take: 5
       })
-      
-      console.log('Bills for company:', companyId, companyBills.length)
-      
+
       return NextResponse.json({
         totalBills: billCount,
-        companyBills: companyBills,
+        companyBills,
         companyBillsCount: companyBills.length,
-        companyId: companyId
+        companyId
       })
     }
-    
+
     return NextResponse.json({
       totalBills: billCount,
-      message: 'Please provide companyId parameter'
+      message: 'Provide companyId to inspect sample bills'
     })
-    
-  } catch (error) {
-    console.error('Test API error:', error)
-    return NextResponse.json({ 
-      error: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : null
-    }, { status: 500 })
+  } catch {
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

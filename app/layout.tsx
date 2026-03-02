@@ -1,22 +1,9 @@
 'use client'
 
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import LogoutButton from "@/components/LogoutButton";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SessionProvider } from "@/components/SessionProvider";
 import { useEffect } from "react";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export default function RootLayout({
   children,
@@ -26,11 +13,18 @@ export default function RootLayout({
   // Add global fetch interceptor for authentication with automatic token refresh
   useEffect(() => {
     const originalFetch = window.fetch;
+
+    const getCookieValue = (name: string): string | null => {
+      const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`))
+      return match ? decodeURIComponent(match[1]) : null
+    }
     
     const refreshToken = async () => {
       try {
         const response = await fetch('/api/auth/refresh', { method: 'POST' });
         if (response.ok) {
+          // notify listeners that session was refreshed so timers can reset
+          window.dispatchEvent(new Event('sessionRefreshed'))
           return true; // Token refreshed successfully
         }
         return false;
@@ -41,15 +35,61 @@ export default function RootLayout({
     
     window.fetch = async (...args) => {
       const [url, options = {}] = args;
+      const requestInit = { ...options } as RequestInit;
+      const method = String(
+        requestInit.method || (url instanceof Request ? url.method : 'GET')
+      ).toUpperCase()
+      const urlString =
+        typeof url === 'string'
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url
+      const isInternalApi =
+        urlString.startsWith('/api/') ||
+        urlString.startsWith(`${window.location.origin}/api/`)
+      const isSuperAdminApi =
+        urlString.startsWith('/api/super-admin') ||
+        urlString.startsWith(`${window.location.origin}/api/super-admin`)
+      const isSuperAdminAuthEndpoint =
+        urlString === '/api/super-admin/auth' ||
+        urlString === `${window.location.origin}/api/super-admin/auth`
       
-      // Skip for auth endpoints and external URLs
-      if (typeof url === 'string' && 
-          (url.includes('/api/auth') || url.startsWith('http'))) {
+      // Skip for external URLs and auth bootstrap endpoints.
+      if (typeof url === 'string' && url.startsWith('http')) {
         return originalFetch(...args);
+      }
+      if (
+        typeof url === 'string' &&
+        (
+          url === '/api/auth' ||
+          url === '/api/auth/refresh' ||
+          url === '/api/auth/login' ||
+          url === '/api/super-admin/auth'
+        )
+      ) {
+        return originalFetch(...args);
+      }
+
+      if (
+        isInternalApi &&
+        ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+      ) {
+        const csrfToken = getCookieValue('csrf-token')
+        if (csrfToken) {
+          const headers = new Headers(requestInit.headers || {})
+          headers.set('x-csrf-token', csrfToken)
+          requestInit.headers = headers
+        }
       }
       
       // Try API call first (cookies are sent automatically with HttpOnly)
-      let response = await originalFetch(url, options);
+      let response = await originalFetch(url, requestInit);
+
+      // Preserve /api/super-admin/auth 401 to show in-page login errors.
+      if (response.status === 401 && isSuperAdminApi && isSuperAdminAuthEndpoint) {
+        return response;
+      }
       
       // If 401, try to refresh token and retry once
       if (response.status === 401 && typeof url === 'string' && url.includes('/api/')) {
@@ -57,25 +97,22 @@ export default function RootLayout({
         
         if (refreshed) {
           // Retry the original request with new token
-          response = await originalFetch(url, options);
-        } else {
-          // Token refresh failed, redirect to login
-          if (process.env.NODE_ENV === 'development') {
-            console.log('Token refresh failed, redirecting to login');
+          response = await originalFetch(url, requestInit);
+          if (response.status !== 401) {
+            return response;
           }
-          window.location.href = '/login';
+        }
+
+        if (isSuperAdminApi) {
+          window.location.href = '/super-admin/login';
           return response;
         }
+
+        // Token refresh failed, redirect to login
+        window.location.href = '/login';
+        return response;
       }
-      
-      // Log only in development without sensitive data
-      if (process.env.NODE_ENV === 'development') {
-        console.log('=== API CALL DEBUG ===');
-        console.log('URL:', url);
-        console.log('Status:', response.status);
-        console.log('===================');
-      }
-      
+
       return response;
     };
     
@@ -86,13 +123,10 @@ export default function RootLayout({
 
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className="antialiased">
         <SessionProvider>
           <ErrorBoundary>
             {children}
-            <LogoutButton />
           </ErrorBoundary>
         </SessionProvider>
       </body>

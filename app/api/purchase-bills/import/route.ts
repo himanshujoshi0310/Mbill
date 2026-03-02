@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import * as XLSX from 'xlsx'
+import { ensureCompanyAccess } from '@/lib/api-security'
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,6 +23,8 @@ export async function POST(request: NextRequest) {
     if (!companyId) {
       return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
     }
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
     const importedBills = []
     const errors = []

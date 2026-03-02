@@ -1,194 +1,319 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
 import { z } from 'zod'
+import { prisma } from '@/lib/prisma'
+import { normalizeOptionalString, normalizePhone, parseBooleanParam, requireRoles } from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
-const prisma = new PrismaClient()
+const idParamsSchema = z.object({ id: z.string().trim().min(1, 'Company ID is required') })
 
-// Validation schema
-const updateCompanySchema = z.object({
-  name: z.string().min(1, "Company name is required").max(100),
-  traderId: z.string().min(1, "Trader ID is required"),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-})
+const updateCompanySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Company name is required').max(100).optional(),
+    traderId: z.string().trim().min(1).optional().nullable(),
+    address: z.string().trim().max(400).optional().nullable(),
+    phone: z.string().optional().nullable(),
+    locked: z.boolean().optional()
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.name !== undefined ||
+      value.traderId !== undefined ||
+      value.address !== undefined ||
+      value.phone !== undefined ||
+      value.locked !== undefined,
+    {
+      message: 'At least one field is required'
+    }
+  )
 
-// Helper function to verify super admin authentication
-async function verifySuperAdmin() {
-  const session = await getSession()
-  if (!session || session.role !== 'SUPER_ADMIN') {
-    throw new Error('Unauthorized - Super Admin access required')
+function normalizeTraderId(input: string | null | undefined): string | null | undefined {
+  if (input === undefined) return undefined
+  if (input === null) return null
+  const trimmed = input.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function normalizeUpdatePayload(payload: z.infer<typeof updateCompanySchema>) {
+  if (payload.phone !== undefined) {
+    const normalizedPhone = payload.phone === null ? null : normalizePhone(payload.phone)
+    if (payload.phone && !normalizedPhone) {
+      return { error: 'Phone must contain exactly 10 digits' as const }
+    }
+  }
+
+  return {
+    name: payload.name?.trim(),
+    traderId: normalizeTraderId(payload.traderId),
+    address:
+      payload.address === undefined
+        ? undefined
+        : payload.address === null
+          ? null
+          : normalizeOptionalString(payload.address),
+    phone:
+      payload.phone === undefined
+        ? undefined
+        : payload.phone === null
+          ? null
+          : normalizePhone(payload.phone),
+    locked: payload.locked
   }
 }
 
-// GET - Single company
+async function getCompanyById(id: string, includeDeleted: boolean) {
+  const company = await prisma.company.findFirst({
+    where: {
+      id,
+      ...(includeDeleted ? {} : { deletedAt: null })
+    },
+    select: {
+      id: true,
+      name: true,
+      traderId: true,
+      address: true,
+      phone: true,
+      locked: true,
+      deletedAt: true,
+      createdAt: true,
+      updatedAt: true,
+      trader: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      users: {
+        where: includeDeleted ? undefined : { deletedAt: null },
+        select: { id: true, userId: true, role: true, locked: true }
+      },
+      parties: { select: { id: true } },
+      farmers: { select: { id: true } },
+      suppliers: { select: { id: true } },
+      products: { select: { id: true } },
+      purchaseBills: { select: { id: true } },
+      salesBills: { select: { id: true } }
+    }
+  })
+
+  if (!company) return null
+
+  return {
+    id: company.id,
+    name: company.name,
+    traderId: company.traderId,
+    address: company.address,
+    phone: company.phone,
+    locked: company.locked,
+    deletedAt: company.deletedAt,
+    createdAt: company.createdAt,
+    updatedAt: company.updatedAt,
+    trader: company.trader,
+    users: company.users,
+    _count: {
+      users: company.users.length,
+      parties: company.parties.length,
+      farmers: company.farmers.length,
+      suppliers: company.suppliers.length,
+      products: company.products.length,
+      purchaseBills: company.purchaseBills.length,
+      salesBills: company.salesBills.length
+    }
+  }
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    await verifySuperAdmin()
-    const { id } = await params
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
 
-    const company = await prisma.company.findUnique({
-      where: { id },
-      include: {
-        trader: {
-          select: {
-            id: true,
-            name: true
-          }
-        },
-        _count: {
-          select: {
-            parties: true,
-            farmers: true,
-            suppliers: true,
-            products: true,
-            purchaseBills: true,
-            salesBills: true
-          }
-        }
-      }
-    })
+  try {
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid company ID' }, { status: 400 })
+    }
+
+    const includeDeleted = parseBooleanParam(new URL(request.url).searchParams.get('includeDeleted'))
+    const company = await getCompanyById(parsedParams.data.id, includeDeleted)
 
     if (!company) {
       return NextResponse.json({ error: 'Company not found' }, { status: 404 })
     }
 
     return NextResponse.json(company)
-  } catch (error) {
-    console.error('❌ Error fetching company:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch company' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch company' }, { status: 500 })
   }
 }
 
-// PUT - Update company
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
-    const { id } = await params
-
-    const body = await request.json()
-    const validatedData = updateCompanySchema.parse(body)
-
-    // Check if company exists
-    const existingCompany = await prisma.company.findUnique({
-      where: { id }
-    })
-
-    if (!existingCompany) {
-      return NextResponse.json({ error: 'Company not found' }, { status: 404 })
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid company ID' }, { status: 400 })
     }
 
-    // Verify trader exists
-    const trader = await prisma.trader.findUnique({
-      where: { id: validatedData.traderId }
-    })
-
-    if (!trader) {
+    const body = await request.json().catch(() => null)
+    const parsedBody = updateCompanySchema.safeParse(body)
+    if (!parsedBody.success) {
       return NextResponse.json(
-        { error: 'Trader not found' },
-        { status: 404 }
-      )
-    }
-
-    // Check if another company has the same name for this trader
-    const duplicateCompany = await prisma.company.findFirst({
-      where: { 
-        name: validatedData.name,
-        traderId: validatedData.traderId,
-        id: { not: id }
-      }
-    })
-
-    if (duplicateCompany) {
-      return NextResponse.json(
-        { error: 'Company with this name already exists for this trader' },
-        { status: 409 }
-      )
-    }
-
-    const company = await prisma.company.update({
-      where: { id },
-      data: validatedData,
-      include: {
-        trader: {
-          select: {
-            id: true,
-            name: true
-          }
+        {
+          error: 'Validation failed',
+          details: parsedBody.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
         },
-        _count: {
-          select: {
-            parties: true,
-            farmers: true,
-            suppliers: true,
-            products: true,
-            purchaseBills: true,
-            salesBills: true
-          }
-        }
-      }
-    })
-
-    console.log('✅ Company updated:', { 
-      id: company.id, 
-      name: company.name, 
-      traderId: company.traderId 
-    })
-
-    return NextResponse.json(company)
-  } catch (error) {
-    console.error('❌ Error updating company:', error)
-    
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: error.issues },
         { status: 400 }
       )
     }
 
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to update company' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+    const normalized = normalizeUpdatePayload(parsedBody.data)
+    if ('error' in normalized) {
+      return NextResponse.json({ error: normalized.error }, { status: 400 })
+    }
+
+    const companyId = parsedParams.data.id
+    const existingCompany = await prisma.company.findFirst({
+      where: { id: companyId, deletedAt: null }
+    })
+
+    if (!existingCompany) {
+      return NextResponse.json({ error: 'Company not found' }, { status: 404 })
+    }
+
+    if (normalized.traderId !== undefined && normalized.traderId !== null) {
+      const trader = await prisma.trader.findFirst({
+        where: {
+          id: normalized.traderId,
+          deletedAt: null
+        },
+        select: { id: true }
+      })
+
+      if (!trader) {
+        return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
+      }
+    }
+
+    const nextName = normalized.name ?? existingCompany.name
+    const nextTraderId =
+      normalized.traderId === undefined ? existingCompany.traderId : normalized.traderId
+
+    const duplicate = await prisma.company.findFirst({
+      where: {
+        id: { not: companyId },
+        name: nextName,
+        traderId: nextTraderId,
+        deletedAt: null
+      },
+      select: { id: true }
+    })
+
+    if (duplicate) {
+      return NextResponse.json(
+        { error: 'Company with this name already exists for the selected trader' },
+        { status: 409 }
+      )
+    }
+
+    const updatedCompany = await prisma.$transaction(async (tx) => {
+      const updated = await tx.company.update({
+        where: { id: companyId },
+        data: {
+          ...(normalized.name !== undefined ? { name: normalized.name } : {}),
+          ...(normalized.traderId !== undefined ? { traderId: normalized.traderId } : {}),
+          ...(normalized.address !== undefined ? { address: normalized.address } : {}),
+          ...(normalized.phone !== undefined ? { phone: normalized.phone } : {}),
+          ...(normalized.locked !== undefined ? { locked: normalized.locked } : {})
+        }
+      })
+
+      if (normalized.locked !== undefined && normalized.locked !== existingCompany.locked) {
+        await tx.user.updateMany({
+          where: {
+            companyId,
+            deletedAt: null
+          },
+          data: {
+            locked: normalized.locked
+          }
+        })
+      }
+
+      if (
+        normalized.traderId !== undefined &&
+        normalized.traderId !== null &&
+        normalized.traderId !== existingCompany.traderId
+      ) {
+        await tx.user.updateMany({
+          where: {
+            companyId,
+            deletedAt: null
+          },
+          data: {
+            traderId: normalized.traderId
+          }
+        })
+      }
+
+      return updated
+    })
+
+    const action =
+      normalized.locked !== undefined && normalized.locked !== existingCompany.locked
+        ? normalized.locked
+          ? 'LOCK'
+          : 'UNLOCK'
+        : 'UPDATE'
+
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action,
+      resourceType: 'COMPANY',
+      resourceId: companyId,
+      scope: {
+        traderId: updatedCompany.traderId,
+        companyId
+      },
+      before: existingCompany,
+      after: updatedCompany,
+      requestMeta: getAuditRequestMeta(request)
+    })
+
+    const response = await getCompanyById(companyId, false)
+    return NextResponse.json(response)
+  } catch {
+    return NextResponse.json({ error: 'Failed to update company' }, { status: 500 })
   }
 }
 
-// DELETE - Delete company
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    await verifySuperAdmin()
-    const { id } = await params
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
 
-    // Check if company exists
-    const existingCompany = await prisma.company.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: {
-            parties: true,
-            farmers: true,
-            suppliers: true,
-            products: true,
-            purchaseBills: true,
-            salesBills: true
-          }
-        }
+  try {
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid company ID' }, { status: 400 })
+    }
+
+    const companyId = parsedParams.data.id
+    const existingCompany = await prisma.company.findFirst({
+      where: {
+        id: companyId,
+        deletedAt: null
       }
     })
 
@@ -196,42 +321,50 @@ export async function DELETE(
       return NextResponse.json({ error: 'Company not found' }, { status: 404 })
     }
 
-    // Prevent deletion if company has related data
-    const hasRelatedData = 
-      existingCompany._count.parties > 0 ||
-      existingCompany._count.farmers > 0 ||
-      existingCompany._count.suppliers > 0 ||
-      existingCompany._count.products > 0 ||
-      existingCompany._count.purchaseBills > 0 ||
-      existingCompany._count.salesBills > 0
+    const deletedAt = new Date()
 
-    if (hasRelatedData) {
-      return NextResponse.json(
-        { 
-          error: 'Cannot delete company with existing related data',
-          details: existingCompany._count
+    const deletedSnapshot = await prisma.$transaction(async (tx) => {
+      const company = await tx.company.update({
+        where: { id: companyId },
+        data: {
+          locked: true,
+          deletedAt
+        }
+      })
+
+      await tx.user.updateMany({
+        where: {
+          companyId,
+          deletedAt: null
         },
-        { status: 409 }
-      )
-    }
+        data: {
+          locked: true,
+          deletedAt
+        }
+      })
 
-    await prisma.company.delete({
-      where: { id }
+      return company
     })
 
-    console.log('✅ Company deleted:', { 
-      id, 
-      name: existingCompany.name 
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action: 'DELETE',
+      resourceType: 'COMPANY',
+      resourceId: companyId,
+      scope: {
+        traderId: existingCompany.traderId,
+        companyId
+      },
+      before: existingCompany,
+      after: deletedSnapshot,
+      requestMeta: getAuditRequestMeta(request)
     })
 
     return NextResponse.json({ success: true })
-  } catch (error) {
-    console.error('❌ Error deleting company:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to delete company' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to delete company' }, { status: 500 })
   }
 }

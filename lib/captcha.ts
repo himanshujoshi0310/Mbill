@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { env } from './config'
 
 // CAPTCHA configuration
 const CAPTCHA_CONFIG = {
-  enabled: process.env.CAPTCHA_ENABLED === 'true',
+  enabled: env.CAPTCHA_ENABLED === 'true',
   threshold: 3, // Show CAPTCHA after 3 failed attempts
-  provider: process.env.CAPTCHA_PROVIDER || 'recaptcha', // recaptcha, hcaptcha, turnstile
-  siteKey: process.env.CAPTCHA_SITE_KEY,
-  secretKey: process.env.CAPTCHA_SECRET_KEY
+  provider: env.CAPTCHA_PROVIDER || 'recaptcha', // recaptcha, hcaptcha, turnstile
+  siteKey: env.CAPTCHA_SITE_KEY,
+  secretKey: env.CAPTCHA_SECRET_KEY
 }
 
 interface CaptchaVerification {

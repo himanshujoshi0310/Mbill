@@ -1,201 +1,255 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
 import { z } from 'zod'
 import bcrypt from 'bcryptjs'
+import { prisma } from '@/lib/prisma'
+import { normalizeOptionalString, normalizePhone, requireRoles } from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
-const prisma = new PrismaClient()
-
-// Validation schemas
-const traderSchema = z.object({
-  name: z.string().min(1, "Trader name is required").max(100),
-})
-
-const userSchema = z.object({
-  userId: z.string().min(1, "User ID is required").max(50),
-  name: z.string().min(1, "Name is required").max(100),
-  role: z.enum(["admin", "user"]),
-  password: z.string().min(6, "Password must be at least 6 characters"),
-})
-
-const companySchema = z.object({
-  name: z.string().min(1, "Company name is required").max(100),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-})
-
-const onboardingSchema = z.object({
-  trader: traderSchema,
-  users: z.array(userSchema).min(1, "At least one user is required"),
-  companies: z.array(companySchema).min(1, "At least one company is required"),
-})
-
-// Helper function to verify super admin authentication
-async function verifySuperAdmin() {
-  const session = await getSession()
-  if (!session || session.role !== 'SUPER_ADMIN') {
-    throw new Error('Unauthorized - Super Admin access required')
-  }
-}
-
-// Helper function for transaction rollback
-async function rollbackTransaction(operations: any[]) {
-  console.log('🔄 Rolling back failed operations...')
-  for (const operation of operations.reverse()) {
-    try {
-      if (operation.type === 'trader') {
-        await prisma.trader.delete({ where: { id: operation.id } })
-      } else if (operation.type === 'user') {
-        await prisma.user.delete({ where: { id: operation.id } })
-      } else if (operation.type === 'company') {
-        await prisma.company.delete({ where: { id: operation.id } })
-      }
-    } catch (error) {
-      console.error(`❌ Failed to rollback ${operation.type} ${operation.id}:`, error)
-    }
-  }
-}
+const onboardingSchema = z
+  .object({
+    trader: z
+      .object({
+        name: z.string().trim().min(1, 'Trader name is required').max(100),
+        locked: z.boolean().optional()
+      })
+      .strict(),
+    users: z
+      .array(
+        z
+          .object({
+            userId: z.string().trim().min(1, 'User ID is required').max(50),
+            name: z.string().trim().min(1, 'Name is required').max(100),
+            password: z.string().min(6, 'Password must be at least 6 characters'),
+            companyName: z.string().trim().optional()
+          })
+          .strict()
+      )
+      .min(1, 'At least one user is required'),
+    companies: z
+      .array(
+        z
+          .object({
+            name: z.string().trim().min(1, 'Company name is required').max(100),
+            address: z.string().trim().max(400).optional().nullable(),
+            phone: z.string().optional().nullable(),
+            locked: z.boolean().optional()
+          })
+          .strict()
+      )
+      .min(1, 'At least one company is required')
+  })
+  .strict()
 
 export async function POST(request: NextRequest) {
-  const completedOperations: any[] = []
-  
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
+    const body = await request.json().catch(() => null)
+    const parsed = onboardingSchema.safeParse(body)
 
-    const body = await request.json()
-    const validatedData = onboardingSchema.parse(body)
-
-    console.log('🚀 Starting trader onboarding process...')
-
-    // Start transaction
-    const result = await prisma.$transaction(async (tx) => {
-      let traderId: string
-
-      // Step 1: Create trader
-      console.log('📝 Creating trader:', validatedData.trader.name)
-      const trader = await tx.trader.create({
-        data: validatedData.trader
-      })
-      traderId = trader.id
-      completedOperations.push({ type: 'trader', id: trader.id })
-      console.log('✅ Trader created:', trader.id)
-
-      // Step 2: Create users
-      const createdUsers = []
-      for (const userData of validatedData.users) {
-        console.log('👤 Creating user:', userData.userId)
-        
-        // Check if user already exists for this trader
-        const existingUser = await tx.user.findUnique({
-          where: {
-            traderId_userId: {
-              traderId: trader.id,
-              userId: userData.userId
-            }
-          }
-        })
-
-        if (existingUser) {
-          throw new Error(`User with ID "${userData.userId}" already exists for this trader`)
-        }
-
-        // Hash password
-        const hashedPassword = await bcrypt.hash(userData.password, 12)
-
-        const user = await tx.user.create({
-          data: {
-            ...userData,
-            traderId: trader.id,
-            password: hashedPassword
-          }
-        })
-        createdUsers.push(user)
-        completedOperations.push({ type: 'user', id: user.id })
-        console.log('✅ User created:', user.userId)
-      }
-
-      // Step 3: Create companies
-      const createdCompanies = []
-      for (const companyData of validatedData.companies) {
-        console.log('🏢 Creating company:', companyData.name)
-        
-        // Check if company already exists for this trader
-        const existingCompany = await tx.company.findFirst({
-          where: {
-            name: companyData.name,
-            traderId: trader.id
-          }
-        })
-
-        if (existingCompany) {
-          throw new Error(`Company "${companyData.name}" already exists for this trader`)
-        }
-
-        const company = await tx.company.create({
-          data: {
-            ...companyData,
-            traderId: trader.id
-          }
-        })
-        createdCompanies.push(company)
-        completedOperations.push({ type: 'company', id: company.id })
-        console.log('✅ Company created:', company.name)
-      }
-
-      return {
-        trader,
-        users: createdUsers.map(({ password, ...user }) => user),
-        companies: createdCompanies
-      }
-    })
-
-    console.log('🎉 Trader onboarding completed successfully!')
-    console.log('📊 Summary:', {
-      traderId: result.trader.id,
-      usersCreated: result.users.length,
-      companiesCreated: result.companies.length
-    })
-
-    return NextResponse.json({
-      success: true,
-      message: 'Trader setup created successfully',
-      data: result
-    })
-
-  } catch (error) {
-    console.error('❌ Trader onboarding failed:', error)
-    
-    // Attempt rollback if operations were completed
-    if (completedOperations.length > 0) {
-      try {
-        await rollbackTransaction(completedOperations)
-        console.log('🔄 Rollback completed')
-      } catch (rollbackError) {
-        console.error('❌ Rollback failed:', rollbackError)
-      }
-    }
-
-    if (error instanceof z.ZodError) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { 
-          error: 'Validation failed', 
-          details: error.issues.map(issue => ({
-            field: issue.path.join('.'),
-            message: issue.message
-          }))
+        {
+          error: 'Validation failed',
+          details: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
         },
         { status: 400 }
       )
     }
 
-    return NextResponse.json(
-      { 
-        error: error instanceof Error ? error.message : 'Failed to create trader setup',
-        details: completedOperations.length > 0 ? 'Partial creation was rolled back' : undefined
+    const traderName = parsed.data.trader.name.trim()
+
+    const duplicateTrader = await prisma.trader.findFirst({
+      where: {
+        name: traderName,
+        deletedAt: null
       },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
+      select: { id: true }
+    })
+
+    if (duplicateTrader) {
+      return NextResponse.json({ error: 'Trader with this name already exists' }, { status: 409 })
+    }
+
+    const companyNames = new Set<string>()
+    for (const company of parsed.data.companies) {
+      const normalizedName = company.name.trim().toLowerCase()
+      if (companyNames.has(normalizedName)) {
+        return NextResponse.json({ error: `Duplicate company name: ${company.name}` }, { status: 400 })
+      }
+      companyNames.add(normalizedName)
+
+      if (company.phone) {
+        const phone = normalizePhone(company.phone)
+        if (!phone) {
+          return NextResponse.json(
+            { error: `Company phone must be 10 digits: ${company.name}` },
+            { status: 400 }
+          )
+        }
+      }
+    }
+
+    const userIds = new Set<string>()
+    for (const user of parsed.data.users) {
+      const normalized = user.userId.trim().toLowerCase()
+      if (userIds.has(normalized)) {
+        return NextResponse.json({ error: `Duplicate user ID in payload: ${user.userId}` }, { status: 400 })
+      }
+      userIds.add(normalized)
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const trader = await tx.trader.create({
+        data: {
+          name: traderName,
+          locked: parsed.data.trader.locked ?? false
+        }
+      })
+
+      const createdCompanies: Array<{ id: string; name: string; traderId: string | null; locked: boolean }> = []
+      for (const company of parsed.data.companies) {
+        const created = await tx.company.create({
+          data: {
+            traderId: trader.id,
+            name: company.name.trim(),
+            address: normalizeOptionalString(company.address),
+            phone: company.phone ? normalizePhone(company.phone) : null,
+            locked: company.locked ?? false
+          }
+        })
+        createdCompanies.push(created)
+      }
+
+      const companyByName = new Map(createdCompanies.map((company) => [company.name.toLowerCase(), company]))
+      const defaultCompany = createdCompanies[0] || null
+
+      const createdUsers: Array<{
+        id: string
+        traderId: string
+        companyId: string | null
+        userId: string
+        name: string | null
+        role: string | null
+        locked: boolean
+      }> = []
+
+      for (const user of parsed.data.users) {
+        const normalizedUserId = user.userId.trim().toLowerCase()
+
+        const existing = await tx.user.findFirst({
+          where: {
+            traderId: trader.id,
+            userId: normalizedUserId,
+            deletedAt: null
+          },
+          select: { id: true }
+        })
+        if (existing) {
+          throw new Error(`User with ID ${normalizedUserId} already exists`)
+        }
+
+        const companyFromName = user.companyName
+          ? companyByName.get(user.companyName.trim().toLowerCase()) || null
+          : null
+
+        const hashedPassword = await bcrypt.hash(user.password, 12)
+
+        const created = await tx.user.create({
+          data: {
+            traderId: trader.id,
+            companyId: companyFromName?.id || defaultCompany?.id || null,
+            userId: normalizedUserId,
+            password: hashedPassword,
+            name: normalizeOptionalString(user.name),
+            role: 'company_user',
+            locked: parsed.data.trader.locked ?? false
+          }
+        })
+
+        createdUsers.push({
+          id: created.id,
+          traderId: created.traderId,
+          companyId: created.companyId,
+          userId: created.userId,
+          name: created.name,
+          role: created.role,
+          locked: created.locked
+        })
+      }
+
+      return {
+        trader,
+        companies: createdCompanies,
+        users: createdUsers
+      }
+    })
+
+    const actor = {
+      id: authResult.auth.userDbId || authResult.auth.userId,
+      role: authResult.auth.role
+    }
+    const requestMeta = getAuditRequestMeta(request)
+
+    await writeAuditLog({
+      actor,
+      action: result.trader.locked ? 'LOCK' : 'CREATE',
+      resourceType: 'TRADER',
+      resourceId: result.trader.id,
+      scope: { traderId: result.trader.id },
+      after: result.trader,
+      requestMeta
+    })
+
+    for (const company of result.companies) {
+      await writeAuditLog({
+        actor,
+        action: company.locked ? 'LOCK' : 'CREATE',
+        resourceType: 'COMPANY',
+        resourceId: company.id,
+        scope: {
+          traderId: company.traderId,
+          companyId: company.id
+        },
+        after: company,
+        requestMeta
+      })
+    }
+
+    for (const user of result.users) {
+      await writeAuditLog({
+        actor,
+        action: user.locked ? 'LOCK' : 'CREATE',
+        resourceType: 'USER',
+        resourceId: user.id,
+        scope: {
+          traderId: user.traderId,
+          companyId: user.companyId
+        },
+        after: user,
+        requestMeta
+      })
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Trader setup created successfully',
+        data: {
+          trader: result.trader,
+          users: result.users,
+          companies: result.companies
+        }
+      },
+      { status: 201 }
     )
-  } finally {
-    await prisma.$disconnect()
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : 'Failed to create trader setup'
+      },
+      { status: 500 }
+    )
   }
 }

@@ -15,6 +15,8 @@ interface Unit {
   id: string
   name: string
   symbol: string
+  kgEquivalent: number
+  isUniversal: boolean
   description?: string
   createdAt: string
   updatedAt: string
@@ -32,6 +34,7 @@ export default function UnitMasterPage() {
   const [formData, setFormData] = useState({
     name: '',
     symbol: '',
+    kgEquivalent: '1',
     description: ''
   })
 
@@ -56,13 +59,10 @@ export default function UnitMasterPage() {
         return
       }
       
-      console.log('Fetching units for company:', companyId)
       const response = await fetch(`/api/units?companyId=${companyId}`)
-      console.log('Units response status:', response.status)
       
       if (response.ok) {
         const data = await response.json()
-        console.log('Units data:', data)
         setUnits(data)
       } else if (response.status === 401) {
         // Token expired or invalid - redirect to login
@@ -97,6 +97,12 @@ export default function UnitMasterPage() {
       return
     }
 
+    const reservedSymbol = formData.symbol.trim().toLowerCase()
+    if (!editingUnit && (reservedSymbol === 'kg' || reservedSymbol === 'qt')) {
+      alert('kg and qt are universal system units and cannot be created manually.')
+      return
+    }
+
     try {
       const params = new URLSearchParams(window.location.search)
       const companyId = params.get('companyId')
@@ -112,13 +118,6 @@ export default function UnitMasterPage() {
       
       const method = editingUnit ? 'PUT' : 'POST'
       
-      console.log('=== UNIT SUBMIT DEBUG ===')
-      console.log('URL:', url)
-      console.log('Method:', method)
-      console.log('Form Data:', JSON.stringify(formData, null, 2))
-      console.log('Company ID:', companyId)
-      console.log('========================')
-      
       const response = await fetch(url, {
         method,
         headers: {
@@ -126,9 +125,6 @@ export default function UnitMasterPage() {
         },
         body: JSON.stringify(formData),
       })
-
-      console.log('Response Status:', response.status)
-      console.log('Response OK:', response.ok)
 
       if (response.ok) {
         alert(editingUnit ? 'Unit updated successfully!' : 'Unit created successfully!')
@@ -152,16 +148,26 @@ export default function UnitMasterPage() {
   }
 
   const handleEdit = (unit: Unit) => {
+    if (unit.isUniversal) {
+      alert('Universal units are locked and cannot be edited.')
+      return
+    }
     setEditingUnit(unit)
     setFormData({
       name: unit.name,
       symbol: unit.symbol,
+      kgEquivalent: unit.kgEquivalent?.toString() || '1',
       description: unit.description || ''
     })
     setIsFormOpen(true)
   }
 
   const handleDelete = async (id: string) => {
+    const unit = units.find((item) => item.id === id)
+    if (unit?.isUniversal) {
+      alert('Universal units cannot be deleted.')
+      return
+    }
     if (!confirm('Are you sure you want to delete this unit? This may affect existing products.')) return
 
     try {
@@ -185,8 +191,45 @@ export default function UnitMasterPage() {
     }
   }
 
+  const handleDeleteAll = async () => {
+    if (!confirm('Delete all user units for this company? Universal units (kg, qt) will be kept.')) return
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/units?companyId=${companyId}&all=true`, { method: 'DELETE' })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchUnits()
+  }
+
+  const handleAddDummyData = async () => {
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/units?companyId=${companyId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed: true })
+    })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchUnits()
+  }
+
+  const handleExportCsv = () => {
+    if (units.length === 0) return alert('No unit data to export')
+    const headers = ['Name', 'Symbol', 'KGEquivalent', 'Universal', 'Description', 'CreatedAt']
+    const rows = units.map((u) => [u.name, u.symbol, u.kgEquivalent, u.isUniversal ? 'Yes' : 'No', u.description || '', u.createdAt])
+    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `units_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   const resetForm = () => {
-    setFormData({ name: '', symbol: '', description: '' })
+    setFormData({ name: '', symbol: '', kgEquivalent: '1', description: '' })
     setEditingUnit(null)
     setIsFormOpen(false)
   }
@@ -211,10 +254,15 @@ export default function UnitMasterPage() {
               <Ruler className="h-8 w-8 text-orange-600" />
               <h1 className="text-3xl font-bold">Unit Master</h1>
             </div>
-            <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Unit
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
+              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
+              <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
+              <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
+                <Plus className="h-4 w-4" />
+                Add Unit
+              </Button>
+            </div>
           </div>
 
           {/* Form */}
@@ -225,7 +273,7 @@ export default function UnitMasterPage() {
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSubmit} className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     <div>
                       <Label htmlFor="name">Unit Name *</Label>
                       <Input
@@ -242,8 +290,23 @@ export default function UnitMasterPage() {
                         id="symbol"
                         value={formData.symbol}
                         onChange={(e) => setFormData({ ...formData, symbol: e.target.value })}
-                        placeholder="Enter symbol"
+                        placeholder="Enter symbol (not kg/qt)"
                         required
+                        disabled={!!editingUnit && editingUnit.isUniversal}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="kgEquivalent">KG Equivalent *</Label>
+                      <Input
+                        id="kgEquivalent"
+                        type="number"
+                        step="0.0001"
+                        min="0.0001"
+                        value={formData.kgEquivalent}
+                        onChange={(e) => setFormData({ ...formData, kgEquivalent: e.target.value })}
+                        placeholder="1 unit = ? KG"
+                        required
+                        disabled={!!editingUnit && editingUnit.isUniversal}
                       />
                     </div>
                     <div>
@@ -285,6 +348,8 @@ export default function UnitMasterPage() {
                     <TableRow>
                       <TableHead>Unit Name</TableHead>
                       <TableHead>Symbol</TableHead>
+                      <TableHead>KG Equivalent</TableHead>
+                      <TableHead>Universal</TableHead>
                       <TableHead>Description</TableHead>
                       <TableHead>Created Date</TableHead>
                       <TableHead>Actions</TableHead>
@@ -297,6 +362,12 @@ export default function UnitMasterPage() {
                         <TableCell>
                           <Badge variant="outline">{unit.symbol}</Badge>
                         </TableCell>
+                        <TableCell>{Number(unit.kgEquivalent || 0).toFixed(4)}</TableCell>
+                        <TableCell>
+                          <Badge variant={unit.isUniversal ? 'default' : 'secondary'}>
+                            {unit.isUniversal ? 'Yes' : 'No'}
+                          </Badge>
+                        </TableCell>
                         <TableCell>{unit.description || '-'}</TableCell>
                         <TableCell>
                           {new Date(unit.createdAt).toLocaleDateString()}
@@ -307,6 +378,8 @@ export default function UnitMasterPage() {
                               size="sm"
                               variant="outline"
                               onClick={() => handleEdit(unit)}
+                              disabled={unit.isUniversal}
+                              title={unit.isUniversal ? 'Universal units are locked' : 'Edit unit'}
                             >
                               <Edit className="h-4 w-4" />
                             </Button>
@@ -314,6 +387,8 @@ export default function UnitMasterPage() {
                               size="sm"
                               variant="outline"
                               onClick={() => handleDelete(unit.id)}
+                              disabled={unit.isUniversal}
+                              title={unit.isUniversal ? 'Universal units are locked' : 'Delete unit'}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>

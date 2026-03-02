@@ -13,26 +13,37 @@ datasource db {
 model Trader {
   id        String   @id @default(cuid())
   name      String
+  locked    Boolean  @default(false)
+  deletedAt DateTime?
   // relations
   users     User[]
   companies Company[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([deletedAt], map: "idx_traders_deleted_at")
 }
 
 model User {
-  id       String  @id @default(cuid())
-  traderId String
-  trader   Trader  @relation(fields: [traderId], references: [id], onDelete: Cascade)
-  userId   String
-  password String
-  name     String?
-  role     String? // admin/user
+  id        String   @id @default(cuid())
+  traderId  String
+  trader    Trader   @relation(fields: [traderId], references: [id], onDelete: Cascade)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  userId    String
+  password  String
+  name      String?
+  role      String?  // super_admin/trader_admin/company_admin/company_user
+  locked    Boolean  @default(false)
+  deletedAt DateTime?
   // relations
+  permissions UserPermission[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([traderId, userId])
+  @@index([companyId], map: "idx_users_company_id")
+  @@index([deletedAt], map: "idx_users_deleted_at")
 }
 
 model Company {
@@ -47,6 +58,7 @@ model Company {
   farmers       Farmer[]
   suppliers     Supplier[]
   products      Product[]
+  users         User[]
   units         Unit[]
   salesItemMasters SalesItemMaster[]
   purchaseBills PurchaseBill[]
@@ -55,11 +67,32 @@ model Company {
   stockLedger   StockLedger[]
   payments      Payment[]
   transports    Transport[]
+  userPermissions UserPermission[]
+  locked        Boolean  @default(false)
+  deletedAt     DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   @@index([traderId], map: "idx_companies_trader_id")
   @@index([name], map: "idx_companies_name")
+  @@index([deletedAt], map: "idx_companies_deleted_at")
+}
+
+model UserPermission {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  module    String
+  canRead   Boolean  @default(false)
+  canWrite  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, companyId, module], map: "uniq_user_company_module_permission")
+  @@index([companyId, module], map: "idx_permissions_company_module")
+  @@index([userId], map: "idx_permissions_user_id")
 }
 
 model Party {
@@ -124,6 +157,8 @@ model Unit {
   company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   name        String
   symbol      String
+  kgEquivalent Float   @default(1)
+  isUniversal Boolean  @default(false)
   description String?
   // relations
   products    Product[]
@@ -315,13 +350,38 @@ model Payment {
   payDate     DateTime
   amount      Float
   mode        String   // cash/online/bank
+  status      String   @default("pending")
   txnRef      String?
   note        String?
+  deletedAt   DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([billType, billId], map: "idx_payments_bill_type")
   @@index([companyId, payDate], map: "idx_payments_company_date")
+  @@index([deletedAt], map: "idx_payments_deleted_at")
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  createdAt      DateTime @default(now())
+  actorId        String
+  actorRole      String
+  actorIp        String?
+  actorUserAgent String?
+  action         String
+  resourceType   String
+  resourceId     String
+  scope          String?
+  before         String?
+  after          String?
+  diff           String?
+  requestId      String?
+  notes          String?
+
+  @@index([createdAt], map: "idx_audit_logs_created_at")
+  @@index([actorId], map: "idx_audit_logs_actor_id")
+  @@index([resourceType, resourceId], map: "idx_audit_logs_resource")
 }
 
 model Transport {
@@ -334,6 +394,7 @@ model Transport {
   driverPhone     String?
   capacity        Float?
   freightRate     Float?
+  isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }

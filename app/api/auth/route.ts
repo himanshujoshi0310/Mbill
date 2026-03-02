@@ -4,9 +4,14 @@ import { setSession } from '@/lib/session'
 import { checkBruteForce, recordFailedAttempt, recordSuccessfulAttempt } from '@/lib/brute-force-protection'
 import { verifyCaptcha, shouldRequireCaptcha } from '@/lib/captcha'
 import { auditLogger } from '@/lib/audit-logging'
+import { env } from '@/lib/config'
+import { loginSchema } from '@/lib/validation'
+import { getRequestIp } from '@/lib/api-security'
 
 // Simple in-memory rate limiting store
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>()
+const accountLockoutStore = new Map<string, { count: number; lockedUntil: number }>()
+const isDev = env.NODE_ENV === 'development'
 
 async function checkRateLimit(identifier: string, windowMs: number, maxRequests: number) {
   const now = Date.now()
@@ -30,13 +35,13 @@ async function checkRateLimit(identifier: string, windowMs: number, maxRequests:
 }
 
 export async function POST(request: NextRequest) {
-  const ipAddress = request.headers.get('x-forwarded-for') || 
-                    request.headers.get('x-real-ip') || 
-                    'unknown'
+  const ipAddress = getRequestIp(request)
   const userAgent = request.headers.get('user-agent') || 'unknown'
 
   // Enhanced brute force protection
-  const bruteForceCheck = checkBruteForce(request)
+  const bruteForceCheck = isDev
+    ? { blocked: false, attemptCount: 0, reason: '', retryAfter: 0 }
+    : checkBruteForce(request)
   if (bruteForceCheck.blocked) {
     await auditLogger.logSecurityEvent(
       'unknown',
@@ -64,7 +69,9 @@ export async function POST(request: NextRequest) {
   // Rate limiting
   const identifier = ipAddress
   
-  const rateLimitResult = await checkRateLimit(identifier, 15 * 60 * 1000, 5) // 5 requests per 15 minutes
+  const rateLimitResult = isDev
+    ? { blocked: false, resetIn: 0 }
+    : await checkRateLimit(identifier, 15 * 60 * 1000, 8) // 8 requests per 15 minutes
   
   if (rateLimitResult.blocked) {
     await auditLogger.logSecurityEvent(
@@ -90,7 +97,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Set CORS headers
-  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000']
+  const allowedOrigins = env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000']
   
   try {
     const headers = {
@@ -102,20 +109,37 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { traderId, userId, password, captchaToken } = body
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Login attempt:', { traderId, userId })
+    const parsed = loginSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'User ID and password are required' },
+        { status: 400, headers }
+      )
     }
+    const { traderId, userId, password } = parsed.data
+    const captchaToken = typeof (body as { captchaToken?: unknown })?.captchaToken === 'string'
+      ? (body as { captchaToken?: string }).captchaToken
+      : undefined
 
     // Validation
-    if (!userId || !password) {
+    if (!userId.trim() || !password.trim()) {
       return NextResponse.json({ 
         error: 'User ID and password are required' 
       }, { 
         status: 400,
         headers 
       })
+    }
+
+    const accountKey = `${(traderId || '').toLowerCase()}:${userId.toLowerCase()}`
+    const now = Date.now()
+    const accountState = isDev ? null : accountLockoutStore.get(accountKey)
+    if (accountState && accountState.lockedUntil > now) {
+      const retryAfter = Math.ceil((accountState.lockedUntil - now) / 1000)
+      return NextResponse.json(
+        { error: 'Account temporarily locked due to repeated failed logins', retryAfter },
+        { status: 429, headers: { ...headers, 'Retry-After': retryAfter.toString() } }
+      )
     }
 
     // Check if CAPTCHA is required
@@ -177,15 +201,32 @@ export async function POST(request: NextRequest) {
         authResult.error
       )
       
-      if (process.env.NODE_ENV === 'development') {
-        console.log('Invalid credentials for:', userId)
+      if (!isDev) {
+        const failed = accountLockoutStore.get(accountKey) || { count: 0, lockedUntil: 0 }
+        failed.count += 1
+        if (failed.count >= 8) {
+          const minutes = Math.min(30, 2 ** Math.min(failed.count - 8, 4))
+          failed.lockedUntil = Date.now() + minutes * 60 * 1000
+        }
+        accountLockoutStore.set(accountKey, failed)
       }
-      return NextResponse.json({ 
-        error: authResult.error || 'Invalid credentials' 
-      }, { 
-        status: 401,
-        headers 
-      })
+
+      const errorMessage = authResult.error || 'Invalid credentials'
+      const status =
+        errorMessage === 'Internal server error' ||
+        errorMessage.startsWith('Database schema mismatch')
+          ? 500
+          : 401
+
+      return NextResponse.json(
+        {
+          error: errorMessage
+        },
+        {
+          status,
+          headers
+        }
+      )
     }
 
     // Record successful attempt (resets brute force counter)
@@ -199,15 +240,12 @@ export async function POST(request: NextRequest) {
       userAgent
     )
 
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Login successful for:', userId)
+    if (!isDev) {
+      accountLockoutStore.delete(accountKey)
     }
 
-    // Set HttpOnly cookies with both tokens
-    await setSession(authResult.token!, authResult.refreshToken)
-
-    // Return success response (token not in body for security)
-    return NextResponse.json({
+    // Prepare success response so we can attach cookies to it
+    const response = NextResponse.json({
       success: true,
       user: authResult.user,
       trader: authResult.trader,
@@ -215,6 +253,11 @@ export async function POST(request: NextRequest) {
     }, {
       headers
     })
+
+    // Set HttpOnly cookies with both tokens on the response
+    await setSession(authResult.token!, authResult.refreshToken, response)
+
+    return response
 
   } catch (error) {
     await auditLogger.logAuthentication(
@@ -226,9 +269,6 @@ export async function POST(request: NextRequest) {
       error instanceof Error ? error.message : 'Unknown error'
     )
     
-    if (process.env.NODE_ENV === 'development') {
-      console.error('Login API error:', error)
-    }
     return NextResponse.json({ 
       error: 'Internal server error'
     }, { 
@@ -243,7 +283,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function OPTIONS() {
-  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000']
+  const allowedOrigins = env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000']
   return new NextResponse(null, {
     status: 200,
     headers: {

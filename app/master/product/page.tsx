@@ -176,6 +176,43 @@ export default function ProductMasterPage() {
     }
   }
 
+  const handleDeleteAll = async () => {
+    if (!confirm('Delete all products for this company?')) return
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/products?companyId=${companyId}&all=true`, { method: 'DELETE' })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchProducts()
+  }
+
+  const handleAddDummyData = async () => {
+    const params = new URLSearchParams(window.location.search)
+    const companyId = params.get('companyId')
+    const response = await fetch(`/api/products?companyId=${companyId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed: true })
+    })
+    const result = await response.json()
+    alert(result.message || result.error || 'Operation completed')
+    if (response.ok) fetchProducts()
+  }
+
+  const handleExportCsv = () => {
+    if (products.length === 0) return alert('No product data to export')
+    const headers = ['Name', 'Unit', 'HSN', 'GST', 'SellingPrice', 'Description', 'Active', 'Stock', 'CreatedAt']
+    const rows = products.map((p) => [p.name, p.unit, p.hsnCode || '', p.gstRate ?? '', p.sellingPrice ?? '', p.description || '', p.isActive ? 'Yes' : 'No', p.currentStock, p.createdAt])
+    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `products_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   const resetForm = () => {
     setFormData({ 
       name: '', 
@@ -210,10 +247,15 @@ export default function ProductMasterPage() {
               <Package className="h-8 w-8 text-blue-600" />
               <h1 className="text-3xl font-bold">Product Master</h1>
             </div>
-            <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Product
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
+              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
+              <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
+              <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
+                <Plus className="h-4 w-4" />
+                Add Product
+              </Button>
+            </div>
           </div>
 
           {/* Form */}

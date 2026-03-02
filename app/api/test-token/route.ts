@@ -1,35 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { generateToken, verifyToken } from '@/lib/auth'
+import { requireRoles } from '@/lib/api-security'
+import { env } from '@/lib/config'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  if (env.NODE_ENV !== 'development') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    // Test token generation and verification
     const testPayload = {
       userId: 'test',
       traderId: 'test',
       name: 'Test User',
       role: 'admin'
     }
-    
+
     const token = generateToken(testPayload)
-    console.log('Generated token:', token)
-    
     const verified = verifyToken(token)
-    console.log('Verification result:', verified)
-    
+
     return NextResponse.json({
       success: true,
-      token,
-      verified,
-      jwtSecret: process.env.JWT_SECRET ? 'EXISTS' : 'MISSING',
-      jwtSecretLength: process.env.JWT_SECRET?.length || 0
+      verified: !!verified
     })
-  } catch (error) {
-    console.error('Token test error:', error)
-    return NextResponse.json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      jwtSecret: process.env.JWT_SECRET ? 'EXISTS' : 'MISSING'
-    })
+  } catch {
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
   }
 }

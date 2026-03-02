@@ -83,6 +83,12 @@ function SpecialPurchaseEditPageContent() {
     rate: '',
     otherAmount: ''
   })
+  const toNonNegative = (value: string) => {
+    if (value === '') return ''
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return ''
+    return String(Math.max(0, parsed))
+  }
 
   useEffect(() => {
     if (billId && companyId) {
@@ -158,7 +164,7 @@ function SpecialPurchaseEditPageContent() {
   }
 
   const calculateItemAmounts = () => {
-    const noOfBags = parseFloat(itemData.noOfBags) || 0
+    const noOfBags = Math.max(0, parseFloat(itemData.noOfBags) || 0)
     const weight = parseFloat(itemData.weight) || 0
     const rate = parseFloat(itemData.rate) || 0
     const otherAmount = parseFloat(itemData.otherAmount) || 0
@@ -179,14 +185,24 @@ function SpecialPurchaseEditPageContent() {
     setTotalAmount(grossAmount.toString())
     
     const paid = parseFloat(paidAmount) || 0
-    setBalanceAmount((grossAmount - paid).toString())
+    if (paid > grossAmount) {
+      alert('Paid amount cannot be more than gross amount')
+      return
+    }
+    setBalanceAmount(Math.max(0, grossAmount - paid).toString())
   }
 
   const handlePaidAmountChange = (value: string) => {
-    setPaidAmount(value)
+    const normalized = toNonNegative(value)
+    setPaidAmount(normalized)
     const total = parseFloat(totalAmount) || 0
-    const paid = parseFloat(value) || 0
-    setBalanceAmount((total - paid).toString())
+    const paid = parseFloat(normalized) || 0
+    if (paid > total) {
+      alert('Paid amount cannot be more than gross amount')
+      setBalanceAmount('0')
+      return
+    }
+    setBalanceAmount(Math.max(0, total - paid).toString())
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -199,6 +215,11 @@ function SpecialPurchaseEditPageContent() {
 
     try {
       const { netAmount, grossAmount } = calculateItemAmounts()
+      const paid = parseFloat(paidAmount) || 0
+      if (paid > grossAmount) {
+        alert('Paid amount cannot be more than gross amount')
+        return
+      }
       
       const requestData = {
         id: billId,
@@ -209,14 +230,14 @@ function SpecialPurchaseEditPageContent() {
         supplierAddress: supplierAddress,
         supplierContact: '', // Add this field if needed
         productId: selectedProduct,
-        noOfBags: parseInt(itemData.noOfBags) || 0,
-        weight: parseFloat(itemData.weight),
-        rate: parseFloat(itemData.rate),
+        noOfBags: Math.max(0, parseInt(itemData.noOfBags) || 0),
+        weight: Math.max(0, parseFloat(itemData.weight) || 0),
+        rate: Math.max(0, parseFloat(itemData.rate) || 0),
         netAmount,
-        otherAmount: parseFloat(itemData.otherAmount) || 0,
+        otherAmount: Math.max(0, parseFloat(itemData.otherAmount) || 0),
         grossAmount,
-        paidAmount: parseFloat(paidAmount),
-        balanceAmount: parseFloat(balanceAmount),
+        paidAmount: Math.max(0, paid),
+        balanceAmount: Math.max(0, parseFloat(balanceAmount) || 0),
         status: parseFloat(balanceAmount) <= 0 ? 'paid' : 'pending'
       }
 
@@ -350,8 +371,9 @@ function SpecialPurchaseEditPageContent() {
                     <Input
                       id="noOfBags"
                       type="number"
+                      min="0"
                       value={itemData.noOfBags}
-                      onChange={(e) => setItemData({...itemData, noOfBags: e.target.value})}
+                      onChange={(e) => setItemData({...itemData, noOfBags: toNonNegative(e.target.value)})}
                       placeholder="Enter bags"
                     />
                   </div>
@@ -360,9 +382,10 @@ function SpecialPurchaseEditPageContent() {
                     <Input
                       id="weight"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={itemData.weight}
-                      onChange={(e) => setItemData({...itemData, weight: e.target.value})}
+                      onChange={(e) => setItemData({...itemData, weight: toNonNegative(e.target.value)})}
                       placeholder="Enter weight"
                     />
                   </div>
@@ -371,9 +394,10 @@ function SpecialPurchaseEditPageContent() {
                     <Input
                       id="rate"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={itemData.rate}
-                      onChange={(e) => setItemData({...itemData, rate: e.target.value})}
+                      onChange={(e) => setItemData({...itemData, rate: toNonNegative(e.target.value)})}
                       placeholder="Enter rate"
                     />
                   </div>
@@ -382,9 +406,10 @@ function SpecialPurchaseEditPageContent() {
                     <Input
                       id="otherAmount"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={itemData.otherAmount}
-                      onChange={(e) => setItemData({...itemData, otherAmount: e.target.value})}
+                      onChange={(e) => setItemData({...itemData, otherAmount: toNonNegative(e.target.value)})}
                       placeholder="Enter other amount"
                     />
                   </div>
@@ -433,12 +458,13 @@ function SpecialPurchaseEditPageContent() {
                 </div>
                 <div>
                   <Label htmlFor="paidAmount">Paid Amount</Label>
-                  <Input
-                    id="paidAmount"
-                    type="number"
-                    step="0.01"
-                    value={paidAmount}
-                    onChange={(e) => handlePaidAmountChange(e.target.value)}
+                    <Input
+                      id="paidAmount"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={paidAmount}
+                      onChange={(e) => handlePaidAmountChange(e.target.value)}
                     placeholder="Enter paid amount"
                   />
                 </div>

@@ -1,145 +1,134 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { cookies } from 'next/headers'
+import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
+import { normalizeTenDigitPhone, parseNonNegativeNumber } from '@/lib/field-validation'
+
+const writeSchema = z.object({
+  id: z.string().optional(),
+  companyId: z.string().trim().min(1),
+  supplierInvoiceNo: z.string().trim().min(1),
+  billDate: z.string().trim().min(1),
+  supplierName: z.string().trim().min(1),
+  supplierAddress: z.string().optional().nullable(),
+  supplierContact: z.string().optional().nullable(),
+  productId: z.string().trim().min(1),
+  noOfBags: z.union([z.number(), z.string()]).optional().nullable(),
+  weight: z.union([z.number(), z.string()]),
+  rate: z.union([z.number(), z.string()]),
+  netAmount: z.union([z.number(), z.string()]).optional().nullable(),
+  otherAmount: z.union([z.number(), z.string()]).optional().nullable(),
+  grossAmount: z.union([z.number(), z.string()]).optional().nullable(),
+  paidAmount: z.union([z.number(), z.string()]).optional().nullable(),
+  balance: z.union([z.number(), z.string()]).optional().nullable(),
+  balanceAmount: z.union([z.number(), z.string()]).optional().nullable(),
+  paymentStatus: z.string().optional().nullable(),
+  status: z.string().optional().nullable()
+}).strict()
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    console.log('Received special purchase body:', JSON.stringify(body, null, 2))
+    const parsed = await parseJsonWithSchema(request, writeSchema)
+    if (!parsed.ok) return parsed.response
 
-    const {
-      companyId,
-      supplierInvoiceNo,
-      billDate,
-      supplierName,
-      supplierAddress,
-      supplierContact,
-      productId,
-      noOfBags,
-      weight,
-      rate,
-      netAmount,
-      otherAmount,
-      grossAmount,
-      paidAmount,
-      balance,
-      paymentStatus,
-    } = body
+    const body = parsed.data
 
-    console.log('Extracted values:', {
-      companyId,
-      supplierInvoiceNo,
-      billDate,
-      supplierName,
-      productId,
-      weight,
-      rate,
-      netAmount,
-      grossAmount,
-      paidAmount,
-      balance
-    })
-
-    // Validate required fields
-    if (!companyId || !supplierName || !productId || !weight || !rate || !supplierInvoiceNo) {
-      console.log('Validation failed - missing required fields')
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    const denied = await ensureCompanyAccess(request, body.companyId)
+    if (denied) return denied
+    const supplierPhone = normalizeTenDigitPhone(body.supplierContact)
+    if (body.supplierContact && !supplierPhone) {
+      return NextResponse.json({ error: 'Supplier contact must be exactly 10 digits' }, { status: 400 })
     }
 
-    // Get user from cookies
+    const weight = parseNonNegativeNumber(body.weight)
+    const rate = parseNonNegativeNumber(body.rate)
+    const netAmount = parseNonNegativeNumber(body.netAmount)
+    const otherAmount = parseNonNegativeNumber(body.otherAmount) ?? 0
+    const grossAmount = parseNonNegativeNumber(body.grossAmount)
+    const paidAmount = parseNonNegativeNumber(body.paidAmount) ?? 0
+    if (weight === null) return NextResponse.json({ error: 'Weight must be a non-negative number' }, { status: 400 })
+    if (rate === null) return NextResponse.json({ error: 'Rate must be a non-negative number' }, { status: 400 })
+    if (netAmount === null) return NextResponse.json({ error: 'Net amount must be a non-negative number' }, { status: 400 })
+    if (grossAmount === null) return NextResponse.json({ error: 'Gross amount must be a non-negative number' }, { status: 400 })
+    if (paidAmount > grossAmount) {
+      return NextResponse.json({ error: 'Paid amount cannot exceed gross amount' }, { status: 400 })
+    }
+    const balanceAmount = parseNonNegativeNumber(body.balance) ?? Math.max(0, grossAmount - paidAmount)
+
     const cookieStore = await cookies()
     const userId = cookieStore.get('userId')?.value || 'test-user'
 
-    console.log('User ID from cookies:', userId)
-
-    console.log('Creating supplier for:', supplierName, 'company:', companyId)
-
-    // Find or create supplier
     let supplier = await prisma.supplier.findFirst({
       where: {
-        companyId,
-        name: supplierName,
+        companyId: body.companyId,
+        name: body.supplierName,
       },
     })
 
     if (!supplier) {
       supplier = await prisma.supplier.create({
         data: {
-          companyId,
-          name: supplierName,
-          address: supplierAddress || null,
-          phone1: supplierContact || null,
+          companyId: body.companyId,
+          name: body.supplierName,
+          address: body.supplierAddress || null,
+          phone1: supplierPhone,
         },
       })
-      console.log('Created new supplier:', supplier.id)
     } else {
-      // Update existing supplier with new information if provided
       supplier = await prisma.supplier.update({
         where: { id: supplier.id },
         data: {
-          address: supplierAddress || supplier.address,
-          phone1: supplierContact || supplier.phone1,
+          address: body.supplierAddress || supplier.address,
+          phone1: supplierPhone || supplier.phone1,
         },
       })
-      console.log('Updated existing supplier:', supplier.id)
     }
 
-    console.log('Creating special purchase bill...')
-
-    // Create special purchase bill
     const specialPurchaseBill = await prisma.specialPurchaseBill.create({
       data: {
-        companyId,
-        supplierInvoiceNo,
-        billDate: new Date(billDate),
+        companyId: body.companyId,
+        supplierInvoiceNo: body.supplierInvoiceNo,
+        billDate: new Date(body.billDate),
         supplierId: supplier.id,
-        totalAmount: parseFloat(grossAmount) || 0,
-        paidAmount: parseFloat(paidAmount) || 0,
-        balanceAmount: parseFloat(balance) || 0,
-        status: paymentStatus || 'unpaid',
+        totalAmount: grossAmount,
+        paidAmount,
+        balanceAmount,
+        status: body.paymentStatus || 'unpaid',
         createdBy: userId,
       },
     })
 
-    console.log('Special purchase bill created:', specialPurchaseBill.id)
-
-    // Create special purchase item
     await prisma.specialPurchaseItem.create({
       data: {
         specialPurchaseBillId: specialPurchaseBill.id,
-        productId,
-        noOfBags: parseInt(noOfBags) || null,
-        weight: parseFloat(weight) || 0,
-        rate: parseFloat(rate) || 0,
-        netAmount: parseFloat(netAmount) || 0,
-        otherAmount: parseFloat(otherAmount) || 0,
-        grossAmount: parseFloat(grossAmount) || 0,
+        productId: body.productId,
+        noOfBags: body.noOfBags ? parseInt(String(body.noOfBags), 10) : null,
+        weight,
+        rate,
+        netAmount,
+        otherAmount,
+        grossAmount,
       },
     })
 
-    console.log('Special purchase item created')
-
-    // Update stock ledger
     await prisma.stockLedger.create({
       data: {
-        companyId,
-        entryDate: new Date(billDate),
-        productId,
+        companyId: body.companyId,
+        entryDate: new Date(body.billDate),
+        productId: body.productId,
         type: 'purchase',
-        qtyIn: parseFloat(weight) || 0,
+        qtyIn: weight,
         refTable: 'special_purchase_bills',
         refId: specialPurchaseBill.id,
       },
     })
 
-    console.log('Stock ledger updated')
-
     return NextResponse.json({ success: true, specialPurchaseBill })
   } catch (error) {
     console.error('Error creating special purchase bill:', error)
     const errorMessage = error instanceof Error ? error.message : 'Internal server error'
-    const errorDetails = error instanceof Error ? error.toString() : String(error)
-    return NextResponse.json({ error: errorMessage, details: errorDetails }, { status: 500 })
+    return NextResponse.json({ error: errorMessage }, { status: 500 })
   }
 }
 
@@ -155,12 +144,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
     }
 
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     if (billId) {
-      // Get single special purchase bill by ID
       const specialPurchaseBill = await prisma.specialPurchaseBill.findFirst({
-        where: { 
+        where: {
           id: billId,
-          companyId 
+          companyId
         },
         include: {
           supplier: true,
@@ -179,10 +170,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(specialPurchaseBill)
     }
 
-    // Default: return all special purchase bills for the company with optional date filtering
-    const whereClause: any = { companyId }
-    
-    // Add date filtering if provided
+    const whereClause: {
+      companyId: string
+      billDate?: {
+        gte?: Date
+        lte?: Date
+      }
+    } = { companyId }
+
     if (dateFrom || dateTo) {
       whereClause.billDate = {}
       if (dateFrom) {
@@ -215,166 +210,129 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    console.log('Received special purchase update body:', JSON.stringify(body, null, 2))
+    const parsed = await parseJsonWithSchema(request, writeSchema)
+    if (!parsed.ok) return parsed.response
 
-    const {
-      id,
-      companyId,
-      supplierInvoiceNo,
-      billDate,
-      supplierName,
-      supplierAddress,
-      supplierContact,
-      productId,
-      noOfBags,
-      weight,
-      rate,
-      netAmount,
-      otherAmount,
-      grossAmount,
-      paidAmount,
-      balanceAmount,
-      status,
-    } = body
+    const body = parsed.data
 
-    console.log('Extracted values:', {
-      id,
-      companyId,
-      supplierInvoiceNo,
-      billDate,
-      supplierName,
-      productId,
-      weight,
-      rate,
-      netAmount,
-      grossAmount,
-      paidAmount,
-      balanceAmount,
-      status,
-    })
-
-    // Validate required fields
-    if (!id || !companyId || !supplierName || !productId || !weight || !rate) {
-      console.log('Validation failed - missing required fields')
+    if (!body.id) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
-    // Get user from cookies
-    const cookieStore = await cookies()
-    const userId = cookieStore.get('userId')?.value || 'test-user'
+    const denied = await ensureCompanyAccess(request, body.companyId)
+    if (denied) return denied
+    const supplierPhone = normalizeTenDigitPhone(body.supplierContact)
+    if (body.supplierContact && !supplierPhone) {
+      return NextResponse.json({ error: 'Supplier contact must be exactly 10 digits' }, { status: 400 })
+    }
 
-    console.log('User ID from cookies:', userId)
+    const weight = parseNonNegativeNumber(body.weight)
+    const rate = parseNonNegativeNumber(body.rate)
+    const netAmount = parseNonNegativeNumber(body.netAmount)
+    const otherAmount = parseNonNegativeNumber(body.otherAmount) ?? 0
+    const grossAmount = parseNonNegativeNumber(body.grossAmount)
+    const paidAmount = parseNonNegativeNumber(body.paidAmount) ?? 0
+    if (weight === null) return NextResponse.json({ error: 'Weight must be a non-negative number' }, { status: 400 })
+    if (rate === null) return NextResponse.json({ error: 'Rate must be a non-negative number' }, { status: 400 })
+    if (netAmount === null) return NextResponse.json({ error: 'Net amount must be a non-negative number' }, { status: 400 })
+    if (grossAmount === null) return NextResponse.json({ error: 'Gross amount must be a non-negative number' }, { status: 400 })
+    if (paidAmount > grossAmount) {
+      return NextResponse.json({ error: 'Paid amount cannot exceed gross amount' }, { status: 400 })
+    }
+    const balanceAmount =
+      parseNonNegativeNumber(body.balanceAmount) ??
+      parseNonNegativeNumber(body.balance) ??
+      Math.max(0, grossAmount - paidAmount)
 
-    // Find or create supplier
     let supplier = await prisma.supplier.findFirst({
       where: {
-        companyId,
-        name: supplierName,
+        companyId: body.companyId,
+        name: body.supplierName,
       },
     })
 
     if (!supplier) {
       supplier = await prisma.supplier.create({
         data: {
-          companyId,
-          name: supplierName,
-          address: supplierAddress || null,
-          phone1: supplierContact || null,
+          companyId: body.companyId,
+          name: body.supplierName,
+          address: body.supplierAddress || null,
+          phone1: supplierPhone,
         },
       })
-      console.log('Created new supplier:', supplier.id)
     } else {
-      // Update existing supplier with new information if provided
       supplier = await prisma.supplier.update({
         where: { id: supplier.id },
         data: {
-          address: supplierAddress || supplier.address,
-          phone1: supplierContact || supplier.phone1,
+          address: body.supplierAddress || supplier.address,
+          phone1: supplierPhone || supplier.phone1,
         },
       })
-      console.log('Updated existing supplier:', supplier.id)
     }
-
-    console.log('Updating special purchase bill...')
-
-    // Update special purchase bill
-    const specialPurchaseBillData = {
-      companyId,
-      supplierInvoiceNo,
-      billDate: new Date(billDate),
-      supplierId: supplier.id,
-      totalAmount: parseFloat(grossAmount) || 0,
-      paidAmount: parseFloat(paidAmount) || 0,
-      balanceAmount: parseFloat(balanceAmount) || 0,
-      status: status || ((parseFloat(balanceAmount) || 0) === 0 ? 'paid' : (parseFloat(balanceAmount) || 0) === (parseFloat(grossAmount) || 0) ? 'unpaid' : 'partial'),
-    }
-
-    console.log('Special purchase bill data:', specialPurchaseBillData)
 
     const specialPurchaseBill = await prisma.specialPurchaseBill.update({
-      where: { id },
-      data: specialPurchaseBillData,
+      where: { id: body.id },
+      data: {
+        companyId: body.companyId,
+        supplierInvoiceNo: body.supplierInvoiceNo,
+        billDate: new Date(body.billDate),
+        supplierId: supplier.id,
+        totalAmount: grossAmount,
+        paidAmount,
+        balanceAmount,
+        status: body.status || (balanceAmount === 0 ? 'paid' : balanceAmount === grossAmount ? 'unpaid' : 'partial'),
+      },
     })
 
-    console.log('Special purchase bill updated:', specialPurchaseBill.id)
-
-    // Update or create special purchase item
     const existingItem = await prisma.specialPurchaseItem.findFirst({
-      where: { specialPurchaseBillId: id },
+      where: { specialPurchaseBillId: body.id },
     })
 
     if (existingItem) {
       await prisma.specialPurchaseItem.update({
         where: { id: existingItem.id },
         data: {
-          productId,
-          noOfBags: parseInt(noOfBags) || null,
-          weight: parseFloat(weight) || 0,
-          rate: parseFloat(rate) || 0,
-          netAmount: parseFloat(netAmount) || 0,
-          otherAmount: parseFloat(otherAmount) || 0,
-          grossAmount: parseFloat(grossAmount) || 0,
+          productId: body.productId,
+          noOfBags: body.noOfBags ? parseInt(String(body.noOfBags), 10) : null,
+          weight,
+          rate,
+          netAmount,
+          otherAmount,
+          grossAmount,
         },
       })
     } else {
       await prisma.specialPurchaseItem.create({
         data: {
-          specialPurchaseBillId: id,
-          productId,
-          noOfBags: parseInt(noOfBags) || null,
-          weight: parseFloat(weight) || 0,
-          rate: parseFloat(rate) || 0,
-          netAmount: parseFloat(netAmount) || 0,
-          otherAmount: parseFloat(otherAmount) || 0,
-          grossAmount: parseFloat(grossAmount) || 0,
+          specialPurchaseBillId: body.id,
+          productId: body.productId,
+          noOfBags: body.noOfBags ? parseInt(String(body.noOfBags), 10) : null,
+          weight,
+          rate,
+          netAmount,
+          otherAmount,
+          grossAmount,
         },
       })
     }
 
-    console.log('Special purchase item updated/created')
-
-    // Update stock ledger
     await prisma.stockLedger.updateMany({
       where: {
         refTable: 'special_purchase_bills',
-        refId: id,
+        refId: body.id,
       },
       data: {
-        entryDate: new Date(billDate),
-        productId,
-        qtyIn: parseFloat(weight) || 0,
+        entryDate: new Date(body.billDate),
+        productId: body.productId,
+        qtyIn: weight,
       },
     })
-
-    console.log('Stock ledger updated')
 
     return NextResponse.json({ success: true, specialPurchaseBill })
   } catch (error) {
     console.error('Error updating special purchase bill:', error)
     const errorMessage = error instanceof Error ? error.message : 'Internal server error'
-    const errorDetails = error instanceof Error ? error.toString() : String(error)
-    return NextResponse.json({ error: errorMessage, details: errorDetails }, { status: 500 })
+    return NextResponse.json({ error: errorMessage }, { status: 500 })
   }
 }
 
@@ -388,7 +346,9 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Bill ID and Company ID are required' }, { status: 400 })
     }
 
-    // Check if special purchase bill exists and belongs to the company
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     const specialPurchaseBill = await prisma.specialPurchaseBill.findFirst({
       where: {
         id: billId,
@@ -400,12 +360,10 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Special purchase bill not found' }, { status: 404 })
     }
 
-    // Delete special purchase items first
     await prisma.specialPurchaseItem.deleteMany({
       where: { specialPurchaseBillId: billId },
     })
 
-    // Delete stock ledger entries
     await prisma.stockLedger.deleteMany({
       where: {
         refTable: 'special_purchase_bills',
@@ -413,12 +371,9 @@ export async function DELETE(request: NextRequest) {
       },
     })
 
-    // Delete the special purchase bill
     await prisma.specialPurchaseBill.delete({
       where: { id: billId },
     })
-
-    console.log('Special purchase bill deleted successfully:', billId)
 
     return NextResponse.json({ success: true, message: 'Special purchase bill deleted successfully' })
   } catch (error) {

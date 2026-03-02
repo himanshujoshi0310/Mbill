@@ -1,205 +1,279 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
 import { z } from 'zod'
+import { prisma } from '@/lib/prisma'
+import { parseBooleanParam, requireRoles } from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
-const prisma = new PrismaClient()
+const idParamsSchema = z.object({ id: z.string().trim().min(1, 'Trader ID is required') })
 
-// Validation schema
-const updateTraderSchema = z.object({
-  name: z.string().min(1, "Trader name is required").max(100),
-})
+const updateTraderSchema = z
+  .object({
+    name: z.string().trim().min(1, 'Trader name is required').max(100).optional(),
+    locked: z.boolean().optional()
+  })
+  .strict()
+  .refine((value) => value.name !== undefined || value.locked !== undefined, {
+    message: 'At least one field is required'
+  })
 
-// Helper function to verify super admin authentication
-async function verifySuperAdmin() {
-  const session = await getSession()
-  if (!session || session.role !== 'SUPER_ADMIN') {
-    throw new Error('Unauthorized - Super Admin access required')
+async function getTraderById(id: string, includeDeleted: boolean) {
+  const trader = await prisma.trader.findFirst({
+    where: {
+      id,
+      ...(includeDeleted ? {} : { deletedAt: null })
+    },
+    select: {
+      id: true,
+      name: true,
+      locked: true,
+      deletedAt: true,
+      createdAt: true,
+      updatedAt: true,
+      companies: {
+        where: includeDeleted ? undefined : { deletedAt: null },
+        select: { id: true, name: true, locked: true, createdAt: true }
+      },
+      users: {
+        where: includeDeleted ? undefined : { deletedAt: null },
+        select: { id: true, userId: true, name: true, role: true, locked: true, createdAt: true }
+      }
+    }
+  })
+
+  if (!trader) return null
+
+  return {
+    id: trader.id,
+    name: trader.name,
+    locked: trader.locked,
+    deletedAt: trader.deletedAt,
+    createdAt: trader.createdAt,
+    updatedAt: trader.updatedAt,
+    companies: trader.companies,
+    users: trader.users,
+    _count: {
+      companies: trader.companies.length,
+      users: trader.users.length
+    }
   }
 }
 
-// GET - Single trader
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    await verifySuperAdmin()
-    const { id } = await params
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
 
-    const trader = await prisma.trader.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: {
-            companies: true,
-            users: true
-          }
-        },
-        companies: {
-          select: {
-            id: true,
-            name: true,
-            createdAt: true
-          },
-          take: 5,
-          orderBy: { createdAt: 'desc' }
-        },
-        users: {
-          select: {
-            id: true,
-            userId: true,
-            name: true,
-            role: true,
-            createdAt: true
-          },
-          take: 5,
-          orderBy: { createdAt: 'desc' }
-        }
-      }
-    })
+  try {
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid trader ID' }, { status: 400 })
+    }
+
+    const includeDeleted = parseBooleanParam(new URL(request.url).searchParams.get('includeDeleted'))
+    const trader = await getTraderById(parsedParams.data.id, includeDeleted)
 
     if (!trader) {
       return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
     }
 
     return NextResponse.json(trader)
-  } catch (error) {
-    console.error('❌ Error fetching trader:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch trader' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch trader' }, { status: 500 })
   }
 }
 
-// PUT - Update trader
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
-    const { id } = await params
-
-    const body = await request.json()
-    const validatedData = updateTraderSchema.parse(body)
-
-    // Check if trader exists
-    const existingTrader = await prisma.trader.findUnique({
-      where: { id }
-    })
-
-    if (!existingTrader) {
-      return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid trader ID' }, { status: 400 })
     }
 
-    // Check if another trader has the same name
-    const duplicateTrader = await prisma.trader.findFirst({
-      where: { 
-        name: validatedData.name,
-        id: { not: id }
-      }
-    })
-
-    if (duplicateTrader) {
+    const body = await request.json().catch(() => null)
+    const parsedBody = updateTraderSchema.safeParse(body)
+    if (!parsedBody.success) {
       return NextResponse.json(
-        { error: 'Trader with this name already exists' },
-        { status: 409 }
-      )
-    }
-
-    const trader = await prisma.trader.update({
-      where: { id },
-      data: validatedData,
-      include: {
-        _count: {
-          select: {
-            companies: true,
-            users: true
-          }
-        }
-      }
-    })
-
-    console.log('✅ Trader updated:', { id: trader.id, name: trader.name })
-
-    return NextResponse.json(trader)
-  } catch (error) {
-    console.error('❌ Error updating trader:', error)
-    
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: error.issues },
+        {
+          error: 'Validation failed',
+          details: parsedBody.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        },
         { status: 400 }
       )
     }
 
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to update trader' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
-  }
-}
-
-// DELETE - Delete trader
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    await verifySuperAdmin()
-    const { id } = await params
-
-    // Check if trader exists
-    const existingTrader = await prisma.trader.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: {
-            companies: true,
-            users: true
-          }
-        }
-      }
+    const traderId = parsedParams.data.id
+    const existingTrader = await prisma.trader.findFirst({
+      where: { id: traderId, deletedAt: null }
     })
 
     if (!existingTrader) {
       return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
     }
 
-    // Prevent deletion of system trader
-    if (id === 'system') {
-      return NextResponse.json(
-        { error: 'Cannot delete system trader' },
-        { status: 403 }
-      )
+    const nextName = parsedBody.data.name?.trim()
+    if (nextName && nextName !== existingTrader.name) {
+      const duplicate = await prisma.trader.findFirst({
+        where: {
+          id: { not: traderId },
+          name: nextName,
+          deletedAt: null
+        },
+        select: { id: true }
+      })
+
+      if (duplicate) {
+        return NextResponse.json({ error: 'Trader with this name already exists' }, { status: 409 })
+      }
     }
 
-    // Log what will be deleted/disassociated
-    console.log(`🗑️ Deleting trader "${existingTrader.name}" with:`, {
-      users: existingTrader._count.users,
-      companies: existingTrader._count.companies
+    const updatedTrader = await prisma.$transaction(async (tx) => {
+      const updated = await tx.trader.update({
+        where: { id: traderId },
+        data: {
+          ...(nextName !== undefined ? { name: nextName } : {}),
+          ...(parsedBody.data.locked !== undefined ? { locked: parsedBody.data.locked } : {})
+        }
+      })
+
+      if (parsedBody.data.locked !== undefined && parsedBody.data.locked !== existingTrader.locked) {
+        await tx.company.updateMany({
+          where: {
+            traderId,
+            deletedAt: null
+          },
+          data: {
+            locked: parsedBody.data.locked
+          }
+        })
+
+        await tx.user.updateMany({
+          where: {
+            traderId,
+            deletedAt: null
+          },
+          data: {
+            locked: parsedBody.data.locked
+          }
+        })
+      }
+
+      return updated
     })
 
-    await prisma.trader.delete({
-      where: { id }
+    const action =
+      parsedBody.data.locked !== undefined && parsedBody.data.locked !== existingTrader.locked
+        ? parsedBody.data.locked
+          ? 'LOCK'
+          : 'UNLOCK'
+        : 'UPDATE'
+
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action,
+      resourceType: 'TRADER',
+      resourceId: traderId,
+      scope: { traderId },
+      before: existingTrader,
+      after: updatedTrader,
+      requestMeta: getAuditRequestMeta(request)
     })
 
-    console.log('✅ Trader deleted:', { id, name: existingTrader.name })
+    const response = await getTraderById(traderId, false)
+    return NextResponse.json(response)
+  } catch {
+    return NextResponse.json({ error: 'Failed to update trader' }, { status: 500 })
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
+  try {
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid trader ID' }, { status: 400 })
+    }
+
+    const traderId = parsedParams.data.id
+    if (traderId === 'system') {
+      return NextResponse.json({ error: 'Cannot delete system trader' }, { status: 403 })
+    }
+
+    const existingTrader = await prisma.trader.findFirst({
+      where: { id: traderId, deletedAt: null }
+    })
+
+    if (!existingTrader) {
+      return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
+    }
+
+    const deletedAt = new Date()
+
+    const deletedSnapshot = await prisma.$transaction(async (tx) => {
+      const trader = await tx.trader.update({
+        where: { id: traderId },
+        data: {
+          locked: true,
+          deletedAt
+        }
+      })
+
+      await tx.company.updateMany({
+        where: {
+          traderId,
+          deletedAt: null
+        },
+        data: {
+          locked: true,
+          deletedAt
+        }
+      })
+
+      await tx.user.updateMany({
+        where: {
+          traderId,
+          deletedAt: null
+        },
+        data: {
+          locked: true,
+          deletedAt
+        }
+      })
+
+      return trader
+    })
+
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action: 'DELETE',
+      resourceType: 'TRADER',
+      resourceId: traderId,
+      scope: { traderId },
+      before: existingTrader,
+      after: deletedSnapshot,
+      requestMeta: getAuditRequestMeta(request)
+    })
 
     return NextResponse.json({ success: true })
-  } catch (error) {
-    console.error('❌ Error deleting trader:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to delete trader' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to delete trader' }, { status: 500 })
   }
 }

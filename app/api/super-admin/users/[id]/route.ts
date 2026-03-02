@@ -1,133 +1,222 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-import { getSession } from '@/lib/session'
 import { z } from 'zod'
 import bcrypt from 'bcryptjs'
+import { prisma } from '@/lib/prisma'
+import { normalizeOptionalString, parseBooleanParam, requireRoles, normalizeAppRole } from '@/lib/api-security'
+import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
-const prisma = new PrismaClient()
+const idParamsSchema = z.object({ id: z.string().trim().min(1, 'User ID is required') })
 
-// Validation schema
-const updateUserSchema = z.object({
-  traderId: z.string().min(1, "Trader ID is required"),
-  userId: z.string().min(1, "User ID is required").max(50),
-  password: z.string().min(6, "Password must be at least 6 characters").optional(),
-  name: z.string().optional(),
-  role: z.enum(["admin", "user"]),
-})
+const updateUserSchema = z
+  .object({
+    traderId: z.string().trim().min(1).optional(),
+    companyId: z.string().trim().min(1).optional().nullable(),
+    userId: z.string().trim().min(1).max(50).optional(),
+    password: z.string().min(6).optional(),
+    name: z.string().trim().max(100).optional().nullable(),
+    locked: z.boolean().optional(),
+    active: z.boolean().optional()
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.traderId !== undefined ||
+      value.companyId !== undefined ||
+      value.userId !== undefined ||
+      value.password !== undefined ||
+      value.name !== undefined ||
+      value.locked !== undefined ||
+      value.active !== undefined,
+    { message: 'At least one field is required' }
+  )
 
-// Helper function to verify super admin authentication
-async function verifySuperAdmin() {
-  const session = await getSession()
-  if (!session || session.role !== 'SUPER_ADMIN') {
-    throw new Error('Unauthorized - Super Admin access required')
+function normalizeCompanyId(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+async function getUserById(id: string, includeDeleted: boolean) {
+  const user = await prisma.user.findFirst({
+    where: {
+      id,
+      ...(includeDeleted ? {} : { deletedAt: null })
+    },
+    include: {
+      trader: {
+        select: {
+          id: true,
+          name: true,
+          locked: true,
+          deletedAt: true
+        }
+      },
+      company: {
+        select: {
+          id: true,
+          name: true,
+          locked: true,
+          deletedAt: true
+        }
+      }
+    }
+  })
+
+  if (!user) return null
+
+  const { password, ...withoutPassword } = user
+  return {
+    ...withoutPassword,
+    active: !withoutPassword.locked
   }
 }
 
-// GET - Single user
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    await verifySuperAdmin()
-    const { id } = await params
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
 
-    const user = await prisma.user.findUnique({
-      where: { id },
-      include: {
-        trader: {
-          select: {
-            id: true,
-            name: true
-          }
-        }
-      }
-    })
+  try {
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid user ID' }, { status: 400 })
+    }
+
+    const includeDeleted = parseBooleanParam(new URL(request.url).searchParams.get('includeDeleted'))
+    const user = await getUserById(parsedParams.data.id, includeDeleted)
 
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    // Remove password from response
-    const { password, ...userWithoutPassword } = user
-
-    return NextResponse.json(userWithoutPassword)
-  } catch (error) {
-    console.error('❌ Error fetching user:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch user' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+    return NextResponse.json(user)
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch user' }, { status: 500 })
   }
 }
 
-// PUT - Update user
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
+
   try {
-    await verifySuperAdmin()
-    const { id } = await params
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid user ID' }, { status: 400 })
+    }
 
-    const body = await request.json()
-    const validatedData = updateUserSchema.parse(body)
+    const body = await request.json().catch(() => null)
+    const parsedBody = updateUserSchema.safeParse(body)
 
-    // Check if user exists
-    const existingUser = await prisma.user.findUnique({
-      where: { id }
+    if (!parsedBody.success) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: parsedBody.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        },
+        { status: 400 }
+      )
+    }
+
+    const userId = parsedParams.data.id
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        id: userId,
+        deletedAt: null
+      }
     })
 
     if (!existingUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    // Verify trader exists
-    const trader = await prisma.trader.findUnique({
-      where: { id: validatedData.traderId }
-    })
+    const nextTraderId = parsedBody.data.traderId?.trim() || existingUser.traderId
+    const nextCompanyId =
+      parsedBody.data.companyId === undefined
+        ? existingUser.companyId
+        : normalizeCompanyId(parsedBody.data.companyId)
+    const nextUserId = parsedBody.data.userId?.trim().toLowerCase() || existingUser.userId
+    const lockedFromActive = parsedBody.data.active === undefined ? undefined : !parsedBody.data.active
+    const nextLocked = parsedBody.data.locked ?? lockedFromActive
 
-    if (!trader) {
+    if (normalizeAppRole(existingUser.role) !== 'super_admin' && !nextCompanyId) {
       return NextResponse.json(
-        { error: 'Trader not found' },
-        { status: 404 }
+        { error: 'Company ID is required for non-super-admin users' },
+        { status: 400 }
       )
     }
 
-    // Check if another user has the same ID for this trader
-    const duplicateUser = await prisma.user.findUnique({
-      where: {
-        traderId_userId: {
-          traderId: validatedData.traderId,
-          userId: validatedData.userId
-        }
+    if (parsedBody.data.traderId !== undefined && parsedBody.data.traderId.trim() !== existingUser.traderId) {
+      const trader = await prisma.trader.findFirst({
+        where: {
+          id: nextTraderId,
+          deletedAt: null
+        },
+        select: { id: true }
+      })
+      if (!trader) {
+        return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
       }
+    }
+
+    if (nextCompanyId) {
+      const company = await prisma.company.findFirst({
+        where: {
+          id: nextCompanyId,
+          traderId: nextTraderId,
+          deletedAt: null
+        },
+        select: { id: true }
+      })
+
+      if (!company) {
+        return NextResponse.json({ error: 'Company not found for this trader' }, { status: 404 })
+      }
+    }
+
+    const duplicateUser = await prisma.user.findFirst({
+      where: {
+        id: { not: userId },
+        traderId: nextTraderId,
+        userId: nextUserId,
+        deletedAt: null
+      },
+      select: { id: true }
     })
 
-    if (duplicateUser && duplicateUser.id !== id) {
+    if (duplicateUser) {
       return NextResponse.json(
         { error: 'User with this ID already exists for this trader' },
         { status: 409 }
       )
     }
 
-    // Prepare update data
-    const updateData: any = {
-      traderId: validatedData.traderId,
-      userId: validatedData.userId,
-      name: validatedData.name,
-      role: validatedData.role
-    }
+    const updateData: {
+      traderId?: string
+      companyId?: string | null
+      userId?: string
+      name?: string | null
+      password?: string
+      locked?: boolean
+    } = {}
 
-    // Only update password if provided
-    if (validatedData.password) {
-      updateData.password = await bcrypt.hash(validatedData.password, 12)
+    if (parsedBody.data.traderId !== undefined) updateData.traderId = nextTraderId
+    if (parsedBody.data.companyId !== undefined) updateData.companyId = nextCompanyId
+    if (parsedBody.data.userId !== undefined) updateData.userId = nextUserId
+    if (parsedBody.data.name !== undefined) updateData.name = normalizeOptionalString(parsedBody.data.name)
+    if (nextLocked !== undefined) updateData.locked = nextLocked
+    if (parsedBody.data.password) {
+      updateData.password = await bcrypt.hash(parsedBody.data.password, 12)
     }
 
     const user = await prisma.user.update({
-      where: { id },
+      where: { id: userId },
       data: updateData,
       include: {
         trader: {
@@ -135,82 +224,120 @@ export async function PUT(
             id: true,
             name: true
           }
+        },
+        company: {
+          select: {
+            id: true,
+            name: true
+          }
         }
       }
     })
 
-    // Remove password from response
     const { password, ...userWithoutPassword } = user
 
-    console.log('✅ User updated:', { 
-      traderId: user.traderId, 
-      userId: user.userId, 
-      role: user.role 
+    const action =
+      nextLocked !== undefined && nextLocked !== existingUser.locked
+        ? nextLocked
+          ? 'LOCK'
+          : 'UNLOCK'
+        : 'UPDATE'
+
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action,
+      resourceType: 'USER',
+      resourceId: userId,
+      scope: {
+        traderId: user.traderId,
+        companyId: user.companyId
+      },
+      before: {
+        ...existingUser,
+        password: undefined
+      },
+      after: {
+        ...userWithoutPassword,
+        active: !userWithoutPassword.locked
+      },
+      requestMeta: getAuditRequestMeta(request)
     })
 
-    return NextResponse.json(userWithoutPassword)
-  } catch (error) {
-    console.error('❌ Error updating user:', error)
-    
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: error.issues },
-        { status: 400 }
-      )
-    }
-
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to update user' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+    return NextResponse.json({
+      ...userWithoutPassword,
+      active: !userWithoutPassword.locked
+    })
+  } catch {
+    return NextResponse.json({ error: 'Failed to update user' }, { status: 500 })
   }
 }
 
-// DELETE - Delete user
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    await verifySuperAdmin()
-    const { id } = await params
+  const authResult = requireRoles(request, ['super_admin'])
+  if (!authResult.ok) return authResult.response
 
-    // Check if user exists
-    const existingUser = await prisma.user.findUnique({
-      where: { id }
+  try {
+    const parsedParams = idParamsSchema.safeParse(await params)
+    if (!parsedParams.success) {
+      return NextResponse.json({ error: 'Invalid user ID' }, { status: 400 })
+    }
+
+    const userId = parsedParams.data.id
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        id: userId,
+        deletedAt: null
+      }
     })
 
     if (!existingUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    // Prevent deletion of super admin users
-    if (existingUser.role === 'SUPER_ADMIN') {
-      return NextResponse.json(
-        { error: 'Cannot delete super admin users' },
-        { status: 403 }
-      )
+    if (normalizeAppRole(existingUser.role) === 'super_admin') {
+      return NextResponse.json({ error: 'Cannot delete super admin users' }, { status: 403 })
     }
 
-    await prisma.user.delete({
-      where: { id }
+    const deletedAt = new Date()
+    const deletedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        locked: true,
+        deletedAt
+      }
     })
 
-    console.log('✅ User deleted:', { 
-      traderId: existingUser.traderId, 
-      userId: existingUser.userId 
+    await writeAuditLog({
+      actor: {
+        id: authResult.auth.userDbId || authResult.auth.userId,
+        role: authResult.auth.role
+      },
+      action: 'DELETE',
+      resourceType: 'USER',
+      resourceId: userId,
+      scope: {
+        traderId: deletedUser.traderId,
+        companyId: deletedUser.companyId
+      },
+      before: {
+        ...existingUser,
+        password: undefined
+      },
+      after: {
+        ...deletedUser,
+        password: undefined
+      },
+      requestMeta: getAuditRequestMeta(request)
     })
 
     return NextResponse.json({ success: true })
-  } catch (error) {
-    console.error('❌ Error deleting user:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to delete user' },
-      { status: error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500 }
-    )
-  } finally {
-    await prisma.$disconnect()
+  } catch {
+    return NextResponse.json({ error: 'Failed to delete user' }, { status: 500 })
   }
 }

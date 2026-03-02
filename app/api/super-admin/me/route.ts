@@ -1,25 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSession } from '@/lib/session'
+import { requireRoles } from '@/lib/api-security'
+import { prisma } from '@/lib/prisma'
 
 export async function GET(request: NextRequest) {
   try {
-    // Use the same session system as regular users
-    const session = await getSession()
-    
-    if (!session) {
+    const authResult = requireRoles(request, ['super_admin'])
+    if (!authResult.ok) return authResult.response
+
+    const user = await prisma.user.findFirst({
+      where: {
+        userId: authResult.auth.userId,
+        traderId: authResult.auth.traderId,
+        deletedAt: null
+      },
+      select: {
+        userId: true,
+        name: true,
+        role: true,
+        traderId: true,
+        locked: true,
+        trader: {
+          select: {
+            locked: true,
+            deletedAt: true
+          }
+        }
+      }
+    })
+
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Verify this is a super admin token
-    if (session.role !== 'super_admin') {
-      return NextResponse.json({ error: 'Insufficient privileges' }, { status: 403 })
+    if (user.locked || user.trader?.locked || user.trader?.deletedAt) {
+      return NextResponse.json({ error: 'Account is locked or inactive' }, { status: 403 })
     }
 
     return NextResponse.json({
-      userId: session.userId,
-      name: session.name,
-      role: session.role,
-      traderId: session.traderId
+      userId: user.userId,
+      name: user.name,
+      role: user.role,
+      traderId: user.traderId
     })
 
   } catch (error) {

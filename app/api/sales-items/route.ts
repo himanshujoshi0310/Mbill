@@ -1,5 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { z } from 'zod'
+import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
+
+const writeSchema = z.object({
+  name: z.string().trim().min(1),
+  hsnCode: z.string().optional().nullable(),
+  gstRate: z.union([z.number(), z.string()]).optional().nullable(),
+  unit: z.string().trim().min(1),
+  sellingPrice: z.union([z.number(), z.string()]).optional().nullable(),
+  description: z.string().optional().nullable(),
+  isActive: z.boolean().optional()
+}).strict()
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,7 +21,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
     }
 
-    // Return empty array for now - sales items would be stored in database
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     return NextResponse.json([])
   } catch (error) {
     console.error('Error fetching sales items:', error)
@@ -20,22 +33,26 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { name, hsnCode, gstRate, unit, sellingPrice, description, isActive } = body
+    const parsed = await parseJsonWithSchema(request, writeSchema)
+    if (!parsed.ok) return parsed.response
 
-    if (!name || !unit) {
-      return NextResponse.json({ error: 'Sales item name and unit are required' }, { status: 400 })
+    const companyId = new URL(request.url).searchParams.get('companyId')
+    if (!companyId) {
+      return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
     }
 
-    return NextResponse.json({ 
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
+    return NextResponse.json({
       id: Date.now().toString(),
-      name, 
-      hsnCode,
-      gstRate,
-      unit,
-      sellingPrice,
-      description,
-      isActive: isActive !== false,
+      name: parsed.data.name,
+      hsnCode: parsed.data.hsnCode,
+      gstRate: parsed.data.gstRate,
+      unit: parsed.data.unit,
+      sellingPrice: parsed.data.sellingPrice,
+      description: parsed.data.description,
+      isActive: parsed.data.isActive !== false,
       createdAt: new Date(),
       updatedAt: new Date()
     })
@@ -47,29 +64,32 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { name, hsnCode, gstRate, unit, sellingPrice, description, isActive } = body
-
-    if (!name || !unit) {
-      return NextResponse.json({ error: 'Sales item name and unit are required' }, { status: 400 })
-    }
+    const parsed = await parseJsonWithSchema(request, writeSchema)
+    if (!parsed.ok) return parsed.response
 
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
+    const companyId = searchParams.get('companyId')
 
     if (!id) {
       return NextResponse.json({ error: 'Sales item ID required' }, { status: 400 })
     }
+    if (!companyId) {
+      return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
+    }
 
-    return NextResponse.json({ 
-      id, 
-      name, 
-      hsnCode,
-      gstRate,
-      unit,
-      sellingPrice,
-      description,
-      isActive: isActive !== false,
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
+    return NextResponse.json({
+      id,
+      name: parsed.data.name,
+      hsnCode: parsed.data.hsnCode,
+      gstRate: parsed.data.gstRate,
+      unit: parsed.data.unit,
+      sellingPrice: parsed.data.sellingPrice,
+      description: parsed.data.description,
+      isActive: parsed.data.isActive !== false,
       updatedAt: new Date()
     })
   } catch (error) {
@@ -82,10 +102,17 @@ export async function DELETE(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
+    const companyId = searchParams.get('companyId')
 
     if (!id) {
       return NextResponse.json({ error: 'Sales item ID required' }, { status: 400 })
     }
+    if (!companyId) {
+      return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
+    }
+
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
     return NextResponse.json({ success: true, message: 'Sales item deleted successfully' })
   } catch (error) {

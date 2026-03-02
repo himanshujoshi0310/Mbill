@@ -1,14 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
+import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
+import { cleanString, normalizeTenDigitPhone } from '@/lib/field-validation'
+
+function normalizeCompanyId(raw: string | null): string | null {
+  if (!raw) return null
+  const value = raw.trim()
+  if (!value || value === 'null' || value === 'undefined') return null
+  return value
+}
+
+const postSchema = z.object({
+  companyId: z.string().trim().min(1).optional(),
+  name: z.string().trim().min(1).optional(),
+  address: z.string().optional().nullable(),
+  phone1: z.string().optional().nullable(),
+  krashakAnubandhNumber: z.string().optional().nullable(),
+  seed: z.boolean().optional()
+}).strict()
+
+const putSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  address: z.string().optional().nullable(),
+  phone1: z.string().optional().nullable(),
+  krashakAnubandhNumber: z.string().optional().nullable()
+}).strict()
+
+const DUMMY_FARMERS = [
+  { name: 'Ramesh Yadav', address: 'Rampura', phone1: '9876543210', krashakAnubandhNumber: 'KA-1001' },
+  { name: 'Mohan Patidar', address: 'Mandsaur', phone1: '9890011122', krashakAnubandhNumber: 'KA-1002' }
+] as const
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const companyId = searchParams.get('companyId')
+    const companyId = normalizeCompanyId(searchParams.get('companyId'))
 
     if (!companyId) {
       return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
     }
+
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
     const farmers = await prisma.farmer.findMany({
       where: { companyId },
@@ -31,14 +65,47 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { companyId, name, address, phone1, krashakAnubandhNumber } = body
+    const parsed = await parseJsonWithSchema(request, postSchema)
+    if (!parsed.ok) return parsed.response
 
-    if (!companyId || !name) {
+    const { searchParams } = new URL(request.url)
+    const companyId = normalizeCompanyId(searchParams.get('companyId') || parsed.data.companyId || null)
+    const name = cleanString(parsed.data.name)
+    const address = cleanString(parsed.data.address)
+    const phone1 = normalizeTenDigitPhone(parsed.data.phone1)
+    const krashakAnubandhNumber = cleanString(parsed.data.krashakAnubandhNumber)
+
+    if (!companyId) {
+      return NextResponse.json({ error: 'Company ID and name are required' }, { status: 400 })
+    }
+    if (parsed.data.phone1 !== undefined && parsed.data.phone1 !== null && !phone1) {
+      return NextResponse.json({ error: 'Phone must be exactly 10 digits' }, { status: 400 })
+    }
+
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
+    if (parsed.data.seed === true) {
+      const created = await prisma.$transaction(
+        DUMMY_FARMERS.map((row) =>
+          prisma.farmer.create({
+            data: {
+              companyId,
+              name: row.name,
+              address: row.address,
+              phone1: row.phone1,
+              krashakAnubandhNumber: row.krashakAnubandhNumber
+            }
+          })
+        )
+      )
+      return NextResponse.json({ success: true, message: `${created.length} dummy farmers added successfully`, count: created.length })
+    }
+
+    if (!name) {
       return NextResponse.json({ error: 'Company ID and name are required' }, { status: 400 })
     }
 
-    // Check if farmer already exists
     const existingFarmer = await prisma.farmer.findFirst({
       where: {
         companyId,
@@ -54,13 +121,13 @@ export async function POST(request: NextRequest) {
       data: {
         companyId,
         name,
-        address: address || null,
-        phone1: phone1 || null,
-        krashakAnubandhNumber: krashakAnubandhNumber || null,
+        address,
+        phone1,
+        krashakAnubandhNumber,
       },
     })
 
-    return NextResponse.json(farmer)
+    return NextResponse.json({ success: true, message: 'Farmer data stored successfully', farmer })
   } catch (error) {
     console.error('Error creating farmer:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -69,17 +136,20 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
+    const parsed = await parseJsonWithSchema(request, putSchema)
+    if (!parsed.ok) return parsed.response
+
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
-    const companyId = searchParams.get('companyId')
-    const body = await request.json()
-    const { name, address, phone1, krashakAnubandhNumber } = body
+    const companyId = normalizeCompanyId(searchParams.get('companyId'))
 
     if (!id || !companyId) {
       return NextResponse.json({ error: 'Farmer ID and Company ID are required' }, { status: 400 })
     }
 
-    // Check if farmer exists
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     const existingFarmer = await prisma.farmer.findFirst({
       where: {
         id,
@@ -91,7 +161,8 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Farmer not found' }, { status: 404 })
     }
 
-    // Check if name conflicts with another farmer
+    const name = cleanString(parsed.data.name)
+
     if (name && name !== existingFarmer.name) {
       const nameConflict = await prisma.farmer.findFirst({
         where: {
@@ -106,13 +177,18 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    const phone1 = normalizeTenDigitPhone(parsed.data.phone1)
+    if (parsed.data.phone1 !== undefined && parsed.data.phone1 !== null && !phone1) {
+      return NextResponse.json({ error: 'Phone must be exactly 10 digits' }, { status: 400 })
+    }
+
     const farmer = await prisma.farmer.update({
       where: { id },
       data: {
         name: name || existingFarmer.name,
-        address: address !== undefined ? address : existingFarmer.address,
-        phone1: phone1 !== undefined ? phone1 : existingFarmer.phone1,
-        krashakAnubandhNumber: krashakAnubandhNumber !== undefined ? krashakAnubandhNumber : existingFarmer.krashakAnubandhNumber,
+        address: parsed.data.address !== undefined ? cleanString(parsed.data.address) : existingFarmer.address,
+        phone1: parsed.data.phone1 !== undefined ? phone1 : existingFarmer.phone1,
+        krashakAnubandhNumber: parsed.data.krashakAnubandhNumber !== undefined ? cleanString(parsed.data.krashakAnubandhNumber) : existingFarmer.krashakAnubandhNumber,
       },
     })
 
@@ -127,13 +203,25 @@ export async function DELETE(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
-    const companyId = searchParams.get('companyId')
+    const companyId = normalizeCompanyId(searchParams.get('companyId'))
+    const all = searchParams.get('all') === 'true'
 
-    if (!id || !companyId) {
-      return NextResponse.json({ error: 'Farmer ID and Company ID are required' }, { status: 400 })
+    if (!companyId) {
+      return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
     }
 
-    // Check if farmer exists
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
+    if (all) {
+      const result = await prisma.farmer.deleteMany({ where: { companyId } })
+      return NextResponse.json({ success: true, message: `${result.count} farmers deleted successfully`, count: result.count })
+    }
+
+    if (!id) {
+      return NextResponse.json({ error: 'Farmer ID is required' }, { status: 400 })
+    }
+
     const existingFarmer = await prisma.farmer.findFirst({
       where: {
         id,
@@ -145,7 +233,6 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Farmer not found' }, { status: 404 })
     }
 
-    // Check if farmer has purchase bills
     const purchaseBillsCount = await prisma.purchaseBill.count({
       where: {
         farmerId: id,

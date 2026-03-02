@@ -1,73 +1,146 @@
-import { PrismaClient } from '@prisma/client'
+import type { NextRequest } from 'next/server'
+import { prisma } from '@/lib/prisma'
 
-const prisma = new PrismaClient()
+export type AuditAction =
+  | 'CREATE'
+  | 'UPDATE'
+  | 'DELETE'
+  | 'LOCK'
+  | 'UNLOCK'
+  | 'STATUS_CHANGE'
+  | 'SECURITY_EVENT'
+  | 'LOGIN'
+  | 'LOGOUT'
 
-export interface AuditLogEntry {
-  id?: string
-  userId: string
-  traderId: string
-  action: string
-  resource: string
-  resourceId?: string
-  ipAddress?: string
+export type AuditResourceType =
+  | 'TRADER'
+  | 'COMPANY'
+  | 'USER'
+  | 'PAYMENT'
+  | 'SECURITY'
+  | 'AUTH'
+
+export type AuditScope = {
+  traderId?: string | null
+  companyId?: string | null
+}
+
+export type AuditActor = {
+  id: string
+  role: string
+}
+
+export type AuditRequestMeta = {
+  requestId?: string
+  ip?: string
   userAgent?: string
-  success: boolean
-  errorMessage?: string
-  metadata?: Record<string, any>
-  timestamp: Date
 }
 
-export interface AuditLogQuery {
-  userId?: string
-  traderId?: string
-  action?: string
-  resource?: string
-  startDate?: Date
-  endDate?: Date
-  success?: boolean
-  limit?: number
-  offset?: number
+const SENSITIVE_KEY_PATTERN = /(password|token|secret|api[_-]?key|card|bank|account|ifsc|hash|txnref)/i
+
+function toJsonString(value: unknown): string | null {
+  if (value === undefined) return null
+  if (value === null) return null
+  return JSON.stringify(value)
 }
 
-class AuditLogger {
-  private enabled: boolean
+export function sanitizeAuditPayload(value: unknown): unknown {
+  if (value === null || value === undefined) return null
 
-  constructor() {
-    this.enabled = process.env.AUDIT_LOGGING_ENABLED === 'true'
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeAuditPayload(item))
   }
 
-  async log(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): Promise<void> {
-    if (!this.enabled) {
-      return
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+
+  if (typeof value !== 'object') {
+    return value
+  }
+
+  const result: Record<string, unknown> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      result[key] = '[REDACTED]'
+      continue
     }
+    result[key] = sanitizeAuditPayload(raw)
+  }
+  return result
+}
 
-    try {
-      const auditEntry = {
-        ...entry,
-        timestamp: new Date(),
-        metadata: entry.metadata ? JSON.stringify(entry.metadata) : null
-      }
+function computeDiff(before: unknown, after: unknown): Record<string, unknown> | null {
+  if (!before || !after || typeof before !== 'object' || typeof after !== 'object') {
+    return null
+  }
 
-      // In production, this would be stored in a dedicated audit_logs table
-      // For now, we'll store in memory and could extend to database or external service
-      if (process.env.NODE_ENV === 'development') {
-        console.log('AUDIT LOG:', auditEntry)
-      }
+  const beforeObj = before as Record<string, unknown>
+  const afterObj = after as Record<string, unknown>
+  const keys = new Set([...Object.keys(beforeObj), ...Object.keys(afterObj)])
+  const diff: Record<string, unknown> = {}
 
-      // Future implementation: Save to database
-      // await prisma.auditLog.create({ data: auditEntry })
-
-      // Future implementation: Send to external logging service
-      // await this.sendToLogService(auditEntry)
-
-    } catch (error) {
-      // Audit logging should never break the application
-      if (process.env.NODE_ENV === 'development') {
-        console.error('Audit logging error:', error)
-      }
+  for (const key of keys) {
+    const prev = beforeObj[key]
+    const next = afterObj[key]
+    if (JSON.stringify(prev) !== JSON.stringify(next)) {
+      diff[key] = { before: prev ?? null, after: next ?? null }
     }
   }
 
+  return Object.keys(diff).length > 0 ? diff : null
+}
+
+export function getAuditRequestMeta(request: NextRequest): AuditRequestMeta {
+  return {
+    requestId: request.headers.get('x-request-id') || undefined,
+    ip:
+      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      request.headers.get('x-real-ip') ||
+      undefined,
+    userAgent: request.headers.get('user-agent') || undefined
+  }
+}
+
+export async function writeAuditLog(input: {
+  actor: AuditActor
+  action: AuditAction
+  resourceType: AuditResourceType
+  resourceId: string
+  scope?: AuditScope
+  before?: unknown
+  after?: unknown
+  requestMeta?: AuditRequestMeta
+  notes?: string
+}): Promise<void> {
+  try {
+    const sanitizedBefore = sanitizeAuditPayload(input.before)
+    const sanitizedAfter = sanitizeAuditPayload(input.after)
+    const diff = computeDiff(sanitizedBefore, sanitizedAfter)
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: input.actor.id,
+        actorRole: input.actor.role,
+        actorIp: input.requestMeta?.ip || null,
+        actorUserAgent: input.requestMeta?.userAgent || null,
+        action: input.action,
+        resourceType: input.resourceType,
+        resourceId: input.resourceId,
+        scope: toJsonString(input.scope || null),
+        before: toJsonString(sanitizedBefore),
+        after: toJsonString(sanitizedAfter),
+        diff: toJsonString(diff),
+        requestId: input.requestMeta?.requestId || null,
+        notes: input.notes || null
+      }
+    })
+  } catch {
+    // Never break request flow because of audit write failures.
+  }
+}
+
+export const auditLogger = {
   async logAuthentication(
     userId: string,
     traderId: string,
@@ -75,217 +148,36 @@ class AuditLogger {
     ipAddress?: string,
     userAgent?: string,
     errorMessage?: string
-  ): Promise<void> {
-    await this.log({
-      userId,
-      traderId,
-      action,
-      resource: 'AUTHENTICATION',
-      success: action.includes('SUCCESS') || action === 'LOGOUT' || action === 'TOKEN_REFRESH',
-      ipAddress,
-      userAgent,
-      errorMessage
+  ) {
+    await writeAuditLog({
+      actor: { id: userId || 'unknown', role: 'unknown' },
+      action: action === 'LOGOUT' ? 'LOGOUT' : 'LOGIN',
+      resourceType: 'AUTH',
+      resourceId: userId || 'unknown',
+      scope: { traderId: traderId || null },
+      requestMeta: { ip: ipAddress, userAgent },
+      after: {
+        outcome: action,
+        error: errorMessage || null
+      }
     })
-  }
-
-  async logDataAccess(
-    userId: string,
-    traderId: string,
-    resource: string,
-    resourceId: string,
-    action: 'READ' | 'CREATE' | 'UPDATE' | 'DELETE',
-    success: boolean,
-    ipAddress?: string,
-    userAgent?: string,
-    errorMessage?: string,
-    metadata?: Record<string, any>
-  ): Promise<void> {
-    await this.log({
-      userId,
-      traderId,
-      action: `${action}_${resource}`,
-      resource,
-      resourceId,
-      success,
-      ipAddress,
-      userAgent,
-      errorMessage,
-      metadata
-    })
-  }
-
+  },
   async logSecurityEvent(
     userId: string,
     traderId: string,
-    event: 'BRUTE_FORCE_DETECTED' | 'RATE_LIMIT_EXCEEDED' | 'SUSPICIOUS_ACTIVITY' | 'CAPTCHA_REQUIRED',
+    event: string,
     ipAddress?: string,
     userAgent?: string,
-    metadata?: Record<string, any>
-  ): Promise<void> {
-    await this.log({
-      userId,
-      traderId,
-      action: event,
-      resource: 'SECURITY',
-      success: false, // Security events are typically negative events
-      ipAddress,
-      userAgent,
-      metadata
+    metadata?: Record<string, unknown>
+  ) {
+    await writeAuditLog({
+      actor: { id: userId || 'unknown', role: 'unknown' },
+      action: 'SECURITY_EVENT',
+      resourceType: 'SECURITY',
+      resourceId: event,
+      scope: { traderId: traderId || null },
+      requestMeta: { ip: ipAddress, userAgent },
+      after: metadata || { event }
     })
   }
-
-  async logAdminAction(
-    userId: string,
-    traderId: string,
-    action: string,
-    resource: string,
-    resourceId?: string,
-    success: boolean = true,
-    metadata?: Record<string, any>
-  ): Promise<void> {
-    await this.log({
-      userId,
-      traderId,
-      action: `ADMIN_${action}`,
-      resource,
-      resourceId,
-      success,
-      metadata
-    })
-  }
-
-  async queryLogs(query: AuditLogQuery): Promise<AuditLogEntry[]> {
-    // This would query the audit_logs table in production
-    // For now, return empty array as placeholder
-    return []
-  }
-
-  async exportLogs(query: AuditLogQuery, format: 'json' | 'csv' = 'json'): Promise<string> {
-    const logs = await this.queryLogs(query)
-    
-    if (format === 'csv') {
-      const headers = ['timestamp', 'userId', 'traderId', 'action', 'resource', 'resourceId', 'ipAddress', 'success', 'errorMessage']
-      const csvRows = logs.map(log => [
-        log.timestamp.toISOString(),
-        log.userId,
-        log.traderId,
-        log.action,
-        log.resource,
-        log.resourceId || '',
-        log.ipAddress || '',
-        log.success.toString(),
-        log.errorMessage || ''
-      ])
-      
-      return [headers, ...csvRows].map(row => row.join(',')).join('\n')
-    }
-    
-    return JSON.stringify(logs, null, 2)
-  }
-
-  private async sendToLogService(entry: any): Promise<void> {
-    // Integration with external logging services like:
-    // - Elasticsearch
-    // - Splunk
-    // - Datadog
-    // - CloudWatch Logs
-    // - Custom SIEM system
-    
-    if (process.env.LOG_SERVICE_URL) {
-      try {
-        await fetch(process.env.LOG_SERVICE_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${process.env.LOG_SERVICE_TOKEN || ''}`
-          },
-          body: JSON.stringify(entry)
-        })
-      } catch (error) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Failed to send to log service:', error)
-        }
-      }
-    }
-  }
-
-  // Compliance and retention methods
-  async getComplianceReport(startDate: Date, endDate: Date): Promise<any> {
-    const logs = await this.queryLogs({
-      startDate,
-      endDate,
-      limit: 10000
-    })
-
-    return {
-      period: { startDate, endDate },
-      totalEvents: logs.length,
-      authenticationEvents: logs.filter(log => log.resource === 'AUTHENTICATION').length,
-      dataAccessEvents: logs.filter(log => log.resource !== 'AUTHENTICATION' && log.resource !== 'SECURITY').length,
-      securityEvents: logs.filter(log => log.resource === 'SECURITY').length,
-      adminActions: logs.filter(log => log.action.startsWith('ADMIN_')).length,
-      failedEvents: logs.filter(log => !log.success).length,
-      uniqueUsers: new Set(logs.map(log => log.userId)).size,
-      uniqueTraders: new Set(logs.map(log => log.traderId)).size
-    }
-  }
-
-  async cleanupOldLogs(retentionDays: number = 365): Promise<void> {
-    // Implementation for log retention policy
-    const cutoffDate = new Date()
-    cutoffDate.setDate(cutoffDate.getDate() - retentionDays)
-
-    // In production: DELETE FROM audit_logs WHERE timestamp < cutoffDate
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`Would clean up logs older than ${cutoffDate.toISOString()}`)
-    }
-  }
-}
-
-// Singleton instance
-export const auditLogger = new AuditLogger()
-
-// Middleware helper for automatic logging
-export function createAuditMiddleware() {
-  return async (request: any, response: any, next: any) => {
-    const startTime = Date.now()
-    const userAgent = request.headers.get('user-agent')
-    const ipAddress = request.headers.get('x-forwarded-for') || 
-                     request.headers.get('x-real-ip') || 
-                     'unknown'
-
-    // Override response methods to capture response
-    const originalSend = response.send
-    response.send = function(body: any) {
-      const endTime = Date.now()
-      const duration = endTime - startTime
-
-      // Log the request/response
-      if (request.user) {
-        auditLogger.logDataAccess(
-          request.user.userId,
-          request.user.traderId,
-          request.nextUrl.pathname,
-          'unknown',
-          'READ',
-          response.statusCode < 400,
-          ipAddress,
-          userAgent,
-          undefined,
-          { duration, statusCode: response.statusCode }
-        )
-      }
-
-      return originalSend.call(this, body)
-    }
-
-    next()
-  }
-}
-
-// Schedule cleanup job (runs daily)
-if (process.env.AUDIT_LOGGING_ENABLED === 'true') {
-  setInterval(() => {
-    auditLogger.cleanupOldLogs(parseInt(process.env.AUDIT_LOG_RETENTION_DAYS || '365'))
-  }, 24 * 60 * 60 * 1000) // Daily
 }

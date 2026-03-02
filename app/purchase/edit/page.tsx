@@ -80,6 +80,12 @@ function PurchaseEditPageContent() {
   const [paidAmount, setPaidAmount] = useState('')
   const [balance, setBalance] = useState('')
   const [billNumber, setBillNumber] = useState('')
+  const toNonNegative = (value: string) => {
+    if (value === '') return ''
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return ''
+    return String(Math.max(0, parsed))
+  }
 
   useEffect(() => {
     if (billId && companyId) {
@@ -152,7 +158,7 @@ function PurchaseEditPageContent() {
       const w = parseFloat(weight) || 0
       const r = parseFloat(rate) || 0
       const h = parseFloat(hammali) || 0
-      setPayableAmount(((w * r) - h).toString())
+      setPayableAmount(Math.max(0, (w * r) - h).toString())
     } else {
       setPayableAmount('')
     }
@@ -163,7 +169,7 @@ function PurchaseEditPageContent() {
     if (payableAmount && paidAmount) {
       const payable = parseFloat(payableAmount) || 0
       const paid = parseFloat(paidAmount) || 0
-      setBalance((payable - paid).toString())
+      setBalance(Math.max(0, payable - paid).toString())
     } else {
       setBalance('')
     }
@@ -191,6 +197,10 @@ function PurchaseEditPageContent() {
     // Payment validation
     const payable = parseFloat(payableAmount) || 0
     const paid = parseFloat(paidAmount) || 0
+    if (payable < 0 || paid < 0) {
+      alert('Amounts cannot be negative')
+      return
+    }
 
     // Check if paid amount exceeds payable amount
     if (paid > payable) {
@@ -221,17 +231,15 @@ function PurchaseEditPageContent() {
         krashakAnubandhNumber,
         markaNumber,
         productId: selectedProduct,
-        noOfBags: parseInt(noOfBags) || 0,
-        hammali: parseFloat(hammali) || 0,
-        weight: parseFloat(weight) || 0,
-        rate: parseFloat(rate),
-        payableAmount: parseFloat(payableAmount),
-        paidAmount: parseFloat(paidAmount),
-        balanceAmount: parseFloat(balance),
+        noOfBags: Math.max(0, parseInt(noOfBags) || 0),
+        hammali: Math.max(0, parseFloat(hammali) || 0),
+        weight: Math.max(0, parseFloat(weight) || 0),
+        rate: Math.max(0, parseFloat(rate) || 0),
+        payableAmount: Math.max(0, parseFloat(payableAmount) || 0),
+        paidAmount: Math.max(0, parseFloat(paidAmount) || 0),
+        balanceAmount: Math.max(0, parseFloat(balance) || 0),
         status: paymentStatus
       }
-
-      console.log('Sending update data:', JSON.stringify(requestData, null, 2))
 
       const response = await fetch('/api/purchase-bills', {
         method: 'PUT',
@@ -379,8 +387,9 @@ function PurchaseEditPageContent() {
                     <Input
                       id="noOfBags"
                       type="number"
+                      min="0"
                       value={noOfBags}
-                      onChange={(e) => setNoOfBags(e.target.value)}
+                      onChange={(e) => setNoOfBags(toNonNegative(e.target.value))}
                       placeholder="Enter number of bags"
                     />
                   </div>
@@ -403,9 +412,10 @@ function PurchaseEditPageContent() {
                     <Input
                       id="weight"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={weight}
-                      onChange={(e) => setWeight(e.target.value)}
+                      onChange={(e) => setWeight(toNonNegative(e.target.value))}
                       placeholder="Enter weight"
                       required
                     />
@@ -417,9 +427,10 @@ function PurchaseEditPageContent() {
                     <Input
                       id="rate"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={rate}
-                      onChange={(e) => setRate(e.target.value)}
+                      onChange={(e) => setRate(toNonNegative(e.target.value))}
                       placeholder="Enter rate"
                       required
                     />
@@ -443,9 +454,10 @@ function PurchaseEditPageContent() {
                     <Input
                       id="paidAmount"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={paidAmount}
-                      onChange={(e) => setPaidAmount(e.target.value)}
+                      onChange={(e) => setPaidAmount(toNonNegative(e.target.value))}
                       placeholder="Enter paid amount"
                     />
                   </div>

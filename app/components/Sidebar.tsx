@@ -5,13 +5,44 @@ import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { ChevronDown, ChevronRight, LayoutDashboard, ShoppingCart, TrendingUp, Menu, X, Package, CreditCard, FileText, Settings } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, ChevronRight, LayoutDashboard, ShoppingCart, TrendingUp, Menu, X, Package, CreditCard, FileText, Settings, Lock } from 'lucide-react'
+import { useEffect, useState } from 'react'
 
-const menuItems = [
+type MenuPermissionModule =
+  | 'MASTER_PRODUCTS'
+  | 'MASTER_SALES_ITEM'
+  | 'MASTER_MARKA'
+  | 'MASTER_PARTIES'
+  | 'MASTER_TRANSPORT'
+  | 'MASTER_UNITS'
+  | 'MASTER_PAYMENT_MODE'
+  | 'MASTER_BANK'
+  | 'PURCHASE_ENTRY'
+  | 'PURCHASE_LIST'
+  | 'SALES_ENTRY'
+  | 'SALES_LIST'
+  | 'STOCK_ADJUSTMENT'
+  | 'STOCK_DASHBOARD'
+  | 'PAYMENTS'
+  | 'REPORTS'
+
+type MenuChild = {
+  title: string
+  href: string
+  permissionModule?: MenuPermissionModule
+}
+
+type MenuItem = {
+  title: string
+  href?: string
+  icon: any
+  children: MenuChild[]
+}
+
+const menuItems: MenuItem[] = [
   {
     title: 'Dashboard',
-    href: '/dashboard',
+    href: '/main/dashboard',
     icon: LayoutDashboard,
     children: [],
   },
@@ -19,58 +50,58 @@ const menuItems = [
     title: 'Master',
     icon: Settings,
     children: [
-      { title: 'Product', href: '/master/product' },
-      { title: 'Sales Item', href: '/master/sales-item' },
-      { title: 'Marka', href: '/master/marka' },
-      { title: 'Party', href: '/master/party' },
-      { title: 'Transport', href: '/master/transport' },
-      { title: 'Unit', href: '/master/unit' },
-      { title: 'Payment Mode', href: '/master/payment-mode' },
-      { title: 'Bank', href: '/master/bank' },
+      { title: 'Product', href: '/master/product', permissionModule: 'MASTER_PRODUCTS' },
+      { title: 'Sales Item', href: '/master/sales-item', permissionModule: 'MASTER_SALES_ITEM' },
+      { title: 'Marka', href: '/master/marka', permissionModule: 'MASTER_MARKA' },
+      { title: 'Party', href: '/master/party', permissionModule: 'MASTER_PARTIES' },
+      { title: 'Transport', href: '/master/transport', permissionModule: 'MASTER_TRANSPORT' },
+      { title: 'Unit', href: '/master/unit', permissionModule: 'MASTER_UNITS' },
+      { title: 'Payment Mode', href: '/master/payment-mode', permissionModule: 'MASTER_PAYMENT_MODE' },
+      { title: 'Bank', href: '/master/bank', permissionModule: 'MASTER_BANK' },
     ],
   },
   {
     title: 'Purchase',
     icon: ShoppingCart,
     children: [
-      { title: 'Purchase Entry', href: '/purchase/entry' },
-      { title: 'Special Purchase', href: '/purchase/special-entry' },
-      { title: 'Purchase List', href: '/purchase/list' },
+      { title: 'Purchase Entry', href: '/purchase/entry', permissionModule: 'PURCHASE_ENTRY' },
+      { title: 'Special Purchase', href: '/purchase/special-entry', permissionModule: 'PURCHASE_ENTRY' },
+      { title: 'Purchase List', href: '/purchase/list', permissionModule: 'PURCHASE_LIST' },
     ],
   },
   {
     title: 'Sales',
     icon: TrendingUp,
     children: [
-      { title: 'Sales Entry', href: '/sales/entry' },
-      { title: 'Sales List', href: '/sales/list' },
+      { title: 'Sales Entry', href: '/sales/entry', permissionModule: 'SALES_ENTRY' },
+      { title: 'Sales List', href: '/sales/list', permissionModule: 'SALES_LIST' },
     ],
   },
   {
     title: 'Stock Management',
     icon: Package,
     children: [
-      { title: 'Stock Adjustment', href: '/stock/adjustment' },
-      { title: 'Stock Dashboard', href: '/stock/dashboard' },
+      { title: 'Stock Adjustment', href: '/stock/adjustment', permissionModule: 'STOCK_ADJUSTMENT' },
+      { title: 'Stock Dashboard', href: '/stock/dashboard', permissionModule: 'STOCK_DASHBOARD' },
     ],
   },
   {
     title: 'Payment',
     icon: CreditCard,
     children: [
-      { title: 'Record Purchase Payment', href: '/payment/purchase/entry' },
-      { title: 'Record Sales Receipt', href: '/payment/sales/entry' },
-      { title: 'Payment History', href: '/payment/dashboard' },
+      { title: 'Record Purchase Payment', href: '/payment/purchase/entry', permissionModule: 'PAYMENTS' },
+      { title: 'Record Sales Receipt', href: '/payment/sales/entry', permissionModule: 'PAYMENTS' },
+      { title: 'Payment History', href: '/payment/dashboard', permissionModule: 'PAYMENTS' },
     ],
   },
   {
     title: 'Reports',
     icon: FileText,
     children: [
-      { title: 'Report Dashboard', href: '/reports/main' },
-      { title: 'Purchase Report', href: '/reports/main?reportType=purchase' },
-      { title: 'Sales Report', href: '/reports/main?reportType=sales' },
-      { title: 'Stock Report', href: '/reports/main?reportType=stock' },
+      { title: 'Report Dashboard', href: '/reports/main', permissionModule: 'REPORTS' },
+      { title: 'Purchase Report', href: '/reports/main?reportType=purchase', permissionModule: 'REPORTS' },
+      { title: 'Sales Report', href: '/reports/main?reportType=sales', permissionModule: 'REPORTS' },
+      { title: 'Stock Report', href: '/reports/main?reportType=stock', permissionModule: 'REPORTS' },
     ],
   },
 ]
@@ -84,6 +115,50 @@ interface SidebarProps {
 export default function Sidebar({ companyId, isCollapsed = false, onToggleCollapse }: SidebarProps) {
   const pathname = usePathname()
   const [openItems, setOpenItems] = useState<string[]>([])
+  const [allowedModules, setAllowedModules] = useState<Set<MenuPermissionModule> | null>(null)
+
+  const withCompany = (href?: string) => {
+    const path = href || '/main/dashboard'
+    if (!companyId) return path
+    return `${path}${path.includes('?') ? '&' : '?'}companyId=${companyId}`
+  }
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    const fetchPermissions = async () => {
+      try {
+        const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}&includeMeta=true` : '?includeMeta=true'
+        const response = await fetch(`/api/auth/permissions${qs}`, {
+          signal: controller.signal
+        })
+        if (!response.ok) {
+          setAllowedModules(null)
+          return
+        }
+
+        const payload = await response.json().catch(() => ({}))
+        const permissions = Array.isArray(payload.permissions) ? payload.permissions : []
+        const readableModules = permissions
+          .filter((row: { module?: string; canRead?: boolean; canWrite?: boolean }) => row.canRead || row.canWrite)
+          .map((row: { module?: string }) => row.module)
+          .filter((module: unknown): module is MenuPermissionModule => typeof module === 'string')
+        setAllowedModules(new Set(readableModules))
+      } catch {
+        if (controller.signal.aborted) return
+        setAllowedModules(null)
+      }
+    }
+
+    void fetchPermissions()
+    return () => controller.abort()
+  }, [companyId])
+
+  const hasChildAccess = (child: MenuChild) => {
+    if (!child.permissionModule) return true
+    if (!allowedModules) return true
+    return allowedModules.has(child.permissionModule)
+  }
 
   const toggleItem = (title: string) => {
     setOpenItems(prev =>
@@ -94,7 +169,7 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
   }
 
   const isActive = (href: string) => {
-    return pathname === href + `?companyId=${companyId}`
+    return pathname === href
   }
 
   const isParentActive = (item: any) => {
@@ -126,7 +201,7 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
 
           if (!hasChildren) {
             return (
-              <Link key={item.title} href={`${item.href}?companyId=${companyId}`}>
+              <Link key={item.title} href={withCompany(item.href)}>
                 <Button
                   variant={active ? 'secondary' : 'ghost'}
                   className={cn(
@@ -163,18 +238,34 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
               {!isCollapsed && (
                 <CollapsibleContent className="pl-4">
                   {item.children.map((child) => (
-                    <Link key={child.title} href={`${child.href}?companyId=${companyId}`}>
+                    hasChildAccess(child) ? (
+                      <Link key={child.title} href={withCompany(child.href)}>
+                        <Button
+                          variant={isActive(child.href) ? 'secondary' : 'ghost'}
+                          size="sm"
+                          className={cn(
+                            'w-full justify-start mb-1',
+                            isActive(child.href) && 'bg-gray-100'
+                          )}
+                        >
+                          {child.title}
+                        </Button>
+                      </Link>
+                    ) : (
                       <Button
-                        variant={isActive(child.href) ? 'secondary' : 'ghost'}
+                        key={child.title}
+                        variant="ghost"
                         size="sm"
-                        className={cn(
-                          'w-full justify-start mb-1',
-                          isActive(child.href) && 'bg-gray-100'
-                        )}
+                        disabled
+                        className="w-full justify-between mb-1 opacity-60 cursor-not-allowed"
                       >
-                        {child.title}
+                        <span>{child.title}</span>
+                        <span className="inline-flex items-center gap-1 text-[10px]">
+                          <Lock className="h-3 w-3" />
+                          No Access
+                        </span>
                       </Button>
-                    </Link>
+                    )
                   ))}
                 </CollapsibleContent>
               )}

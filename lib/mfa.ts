@@ -1,3 +1,5 @@
+import { env } from './config'
+
 // MFA Implementation (requires additional packages: speakeasy, qrcode)
 // This is a placeholder implementation that would require:
 // npm install speakeasy qrcode @types/qrcode
@@ -16,8 +18,8 @@ export interface MFAVerificationResult {
 
 // MFA Configuration
 const MFA_CONFIG = {
-  enabled: process.env.MFA_ENABLED === 'true',
-  issuer: process.env.MFA_ISSUER || 'Billing App',
+  enabled: env.MFA_ENABLED === 'true',
+  issuer: env.MFA_ISSUER || 'Billing App',
   window: 2, // Allow 2 time steps before/after current time
   maxAttempts: 3,
   lockoutDuration: 15 * 60 * 1000 // 15 minutes

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import LogoutButton from '@/components/LogoutButton'
 import { Button } from '@/components/ui/button'
@@ -40,6 +40,7 @@ interface SalesItem {
 
 export default function SalesEntryPage() {
   const router = useRouter()
+  const itemIdSequence = useRef(0)
   const [products, setProducts] = useState<Product[]>([])
   const [parties, setParties] = useState<Party[]>([])
   const [loading, setLoading] = useState(true)
@@ -90,6 +91,14 @@ export default function SalesEntryPage() {
   const [totalWeight, setTotalWeight] = useState(0)
   const [totalAmount, setTotalAmount] = useState(0)
 
+  const onlyDigits = (value: string, max = 10) => value.replace(/\D/g, '').slice(0, max)
+  const toNonNegative = (value: string) => {
+    if (value === '') return ''
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return ''
+    return String(Math.max(0, parsed))
+  }
+
   useEffect(() => {
     fetchData()
   }, [])
@@ -98,7 +107,7 @@ export default function SalesEntryPage() {
     // Calculate to pay when freight amount or advance changes
     const freight = parseFloat(freightAmount) || 0
     const adv = parseFloat(advance) || 0
-    setToPay((freight - adv).toString())
+    setToPay(Math.max(0, freight - adv).toString())
   }, [freightAmount, advance])
 
   // Filter transports based on search term
@@ -150,6 +159,10 @@ export default function SalesEntryPage() {
       alert('Please enter party name')
       return
     }
+    if (partyContact && onlyDigits(partyContact).length !== 10) {
+      alert('Party contact must be exactly 10 digits')
+      return
+    }
 
     try {
       const urlParams = new URLSearchParams(window.location.search)
@@ -169,13 +182,18 @@ export default function SalesEntryPage() {
           type: 'buyer', // Default to buyer type for sales
           name: partyName,
           address: partyAddress,
-          phone1: partyContact,
+          phone1: onlyDigits(partyContact),
         }),
       })
 
       if (response.ok) {
-        const newParty = await response.json()
-        setParties([...parties, newParty])
+        const result = await response.json()
+        const newParty = result?.party
+        if (!newParty?.id) {
+          alert(result?.error || 'Party created but invalid response received')
+          return
+        }
+        setParties((prev) => [...prev, newParty])
         setSelectedParty(newParty.id)
         alert('Party added successfully!')
       } else {
@@ -246,12 +264,10 @@ export default function SalesEntryPage() {
       // Generate next invoice number
       const billsRes = await fetch(`/api/sales-bills?companyId=${companyId}&last=true`)
       const billsData = await billsRes.json()
-      const lastBillNum = billsData.lastBillNumber || 0
+      const lastBillNum = Number(billsData.lastBillNumber || 0)
       const nextInvoiceNumber = lastBillNum === 0 ? 1 : lastBillNum + 1
       setInvoiceNo(nextInvoiceNumber.toString())
       
-      console.log(`Invoice generation: Last bill: ${lastBillNum}, Next invoice: ${nextInvoiceNumber}`)
-
       setLoading(false)
     } catch (error) {
       console.error('Error fetching data:', error)
@@ -280,26 +296,22 @@ export default function SalesEntryPage() {
 
     const salesItem = salesItems.find(s => s.id === currentItem.salesItemId)
     const { totalWeight, amount } = calculateItemTotals()
-
-    console.log('=== ADDING SALES ITEM DEBUG ===')
-    console.log('SELECTED SALES ITEM ID:', currentItem.salesItemId)
-    console.log('FOUND SALES ITEM:', salesItem)
-    console.log('SALES ITEM PRODUCT ID:', salesItem?.productId)
-    console.log('TOTAL WEIGHT:', totalWeight)
-    console.log('AMOUNT:', amount)
+    const bags = parseFloat(currentItem.noOfBags) || 0
+    const rate = parseFloat(currentItem.rate) || 0
+    if (bags <= 0 || totalWeight <= 0 || rate <= 0 || amount < 0) {
+      alert('Bags, weight and rate must be greater than 0')
+      return
+    }
 
     const newItem: SalesItem = {
-      id: Date.now().toString(),
+      id: `item-${++itemIdSequence.current}`,
       productId: salesItem?.productId || currentItem.salesItemId, // Use the actual productId from sales item
       weight: totalWeight || 0,
-      bags: parseFloat(currentItem.noOfBags) || 0,
-      rate: parseFloat(currentItem.rate) || 0,
+      bags,
+      rate,
       amount: amount || 0,
       discount: 0 // Default discount to 0
     }
-
-    console.log('NEW ITEM CREATED:', newItem)
-    console.log('==========================')
 
     // Validate that we have a real product ID (not temp)
     if (newItem.productId.startsWith('temp_')) {
@@ -384,11 +396,6 @@ export default function SalesEntryPage() {
       }
     }
     
-    if (parseFloat(toPay) < 0) {
-      alert('TO Pay cannot be negative')
-      return
-    }
-
     try {
       const urlParams = new URLSearchParams(window.location.search)
       const firmId = urlParams.get('companyId') // Using companyId as firmId for now
@@ -424,10 +431,10 @@ export default function SalesEntryPage() {
       const transportBillData = {
         transportName,
         lorryNo,
-        freightPerQt: parseFloat(freightPerQt) || 0,
-        freightAmount: parseFloat(freightAmount) || 0,
-        advance: parseFloat(advance) || 0,
-        toPay: parseFloat(toPay) || 0
+        freightPerQt: Math.max(0, parseFloat(freightPerQt) || 0),
+        freightAmount: Math.max(0, parseFloat(freightAmount) || 0),
+        advance: Math.max(0, parseFloat(advance) || 0),
+        toPay: Math.max(0, parseFloat(toPay) || 0)
       }
 
       const requestData = {
@@ -435,14 +442,6 @@ export default function SalesEntryPage() {
         transportBill: transportBillData,
         salesItems: salesInvoiceItems
       }
-
-      console.log('=== SALES ENTRY DEBUG ===')
-      console.log('Company ID:', companyId)
-      console.log('Party Name:', partyName)
-      console.log('Current Form Items:', currentFormItems)
-      console.log('Total Amount:', totalAmount)
-      console.log('Request Data:', JSON.stringify(requestData, null, 2))
-      console.log('========================')
 
       const response = await fetch('/api/sales-invoices', {
         method: 'POST',
@@ -452,13 +451,8 @@ export default function SalesEntryPage() {
         body: JSON.stringify(requestData),
       })
 
-      console.log('Response Status:', response.status)
-      console.log('Response OK:', response.ok)
-      console.log('Response Headers:', response.headers)
-
       // Get response as text first to see raw content
       const responseText = await response.text()
-      console.log('Raw Response Text:', responseText)
 
       if (response.ok) {
         alert('Sales bill created successfully!')
@@ -511,8 +505,8 @@ export default function SalesEntryPage() {
                 <div className="mb-8">
                   <h3 className="text-lg font-semibold mb-4 pb-2 border-b">1. Basic Info</h3>
                   <div className="space-y-6">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      <div>
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                      <div className="lg:col-span-3">
                         <Label htmlFor="invoiceNo">Invoice No. (Auto-generated)</Label>
                         <Input 
                           id="invoiceNo" 
@@ -529,7 +523,7 @@ export default function SalesEntryPage() {
                           </p>
                         )}
                       </div>
-                      <div>
+                      <div className="lg:col-span-3">
                         <Label htmlFor="invoiceDate">Invoice Date</Label>
                         <Input
                           id="invoiceDate"
@@ -539,7 +533,7 @@ export default function SalesEntryPage() {
                           required
                         />
                       </div>
-                      <div>
+                      <div className="lg:col-span-6">
                         <Label htmlFor="party">Party</Label>
                         <div className="flex gap-2">
                           <Select value={selectedParty} onValueChange={handlePartySelect}>
@@ -547,15 +541,19 @@ export default function SalesEntryPage() {
                               <SelectValue placeholder="Select Party" />
                             </SelectTrigger>
                             <SelectContent>
-                              {parties.map((party) => (
-                                <SelectItem key={party.id} value={party.id}>
+                              {parties
+                                .filter((party, index, self) => !!party?.id && index === self.findIndex((p) => p.id === party.id))
+                                .map((party, index) => (
+                                <SelectItem key={`${party.id}-${index}`} value={party.id}>
                                   {party.name}
                                 </SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
                         </div>
-                      <div>
+                      </div>
+
+                      <div className="lg:col-span-3">
                         <Label htmlFor="partyName">Party Name</Label>
                         <Input
                           id="partyName"
@@ -566,7 +564,7 @@ export default function SalesEntryPage() {
                           disabled={selectedParty !== ''}
                         />
                       </div>
-                      <div>
+                      <div className="lg:col-span-4">
                         <Label htmlFor="partyAddress">Party Address</Label>
                         <Input
                           id="partyAddress"
@@ -576,20 +574,22 @@ export default function SalesEntryPage() {
                           disabled={selectedParty !== ''}
                         />
                       </div>
-                      <div>
+                      <div className="lg:col-span-3">
                         <Label htmlFor="partyContact">Party Contact No.</Label>
                         <Input
                           id="partyContact"
                           value={partyContact}
-                          onChange={(e) => setPartyContact(e.target.value)}
-                          placeholder="Enter party contact"
+                          onChange={(e) => setPartyContact(onlyDigits(e.target.value))}
+                          placeholder="Enter 10 digit contact"
+                          inputMode="numeric"
+                          maxLength={10}
                           disabled={selectedParty !== ''}
                         />
                       </div>
 
                       {/* Add New Party Button */}
                       {!selectedParty && partyName && (
-                        <div className="flex items-end">
+                        <div className="lg:col-span-2 flex items-end">
                           <Button type="button" variant="outline" onClick={handleAddNewParty}>
                             Add Party
                           </Button>
@@ -669,9 +669,10 @@ export default function SalesEntryPage() {
                         <Input
                           id="freightPerQt"
                           type="number"
+                          min="0"
                           step="0.01"
                           value={freightPerQt}
-                          onChange={(e) => setFreightPerQt(e.target.value)}
+                          onChange={(e) => setFreightPerQt(toNonNegative(e.target.value))}
                           placeholder="Enter freight per quantity"
                         />
                       </div>
@@ -680,9 +681,10 @@ export default function SalesEntryPage() {
                         <Input
                           id="freightAmount"
                           type="number"
+                          min="0"
                           step="0.01"
                           value={freightAmount}
-                          onChange={(e) => setFreightAmount(e.target.value)}
+                          onChange={(e) => setFreightAmount(toNonNegative(e.target.value))}
                           placeholder="Enter freight amount"
                         />
                       </div>
@@ -691,9 +693,10 @@ export default function SalesEntryPage() {
                         <Input
                           id="advance"
                           type="number"
+                          min="0"
                           step="0.01"
                           value={advance}
-                          onChange={(e) => setAdvance(e.target.value)}
+                          onChange={(e) => setAdvance(toNonNegative(e.target.value))}
                           placeholder="Enter advance amount"
                         />
                       </div>
@@ -736,14 +739,14 @@ export default function SalesEntryPage() {
                             </SelectContent>
                           </Select>
                         </div>
-                      </div>
                         <div>
                           <Label htmlFor="noOfBags">No. of Bags</Label>
                           <Input
                             id="noOfBags"
                             type="number"
+                            min="0"
                             value={currentItem.noOfBags}
-                            onChange={(e) => setCurrentItem({...currentItem, noOfBags: e.target.value})}
+                            onChange={(e) => setCurrentItem({...currentItem, noOfBags: toNonNegative(e.target.value)})}
                             placeholder="Enter bags"
                           />
                         </div>
@@ -752,9 +755,10 @@ export default function SalesEntryPage() {
                           <Input
                             id="weightPerBag"
                             type="number"
+                            min="0"
                             step="0.01"
                             value={currentItem.weightPerBag}
-                            onChange={(e) => setCurrentItem({...currentItem, weightPerBag: e.target.value})}
+                            onChange={(e) => setCurrentItem({...currentItem, weightPerBag: toNonNegative(e.target.value)})}
                             placeholder="Enter weight per bag"
                           />
                         </div>
@@ -763,9 +767,10 @@ export default function SalesEntryPage() {
                           <Input
                             id="itemRate"
                             type="number"
+                            min="0"
                             step="0.01"
                             value={currentItem.rate}
-                            onChange={(e) => setCurrentItem({...currentItem, rate: e.target.value})}
+                            onChange={(e) => setCurrentItem({...currentItem, rate: toNonNegative(e.target.value)})}
                             placeholder="Enter rate"
                           />
                         </div>
@@ -834,7 +839,7 @@ export default function SalesEntryPage() {
                       </div>
                     )}
                   </div>
-                </div>
+                   </div>
 
                 {/* Section 4 - Totals */}
                 <div className="mt-0 -mt-4">

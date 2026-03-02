@@ -1,12 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { cookies } from 'next/headers'
+import { z } from 'zod'
+import { ensureCompanyAccess, getRequestAuthContext, parseJsonWithSchema } from '@/lib/api-security'
+import { normalizeTenDigitPhone, parseNonNegativeNumber } from '@/lib/field-validation'
+
+const purchaseCreateSchema = z.object({
+  companyId: z.string().min(1),
+  billNumber: z.union([z.string(), z.number()]),
+  billDate: z.string().min(1),
+  farmerName: z.string().min(1),
+  farmerAddress: z.string().optional(),
+  farmerContact: z.string().optional(),
+  krashakAnubandhNumber: z.string().optional(),
+  markaNumber: z.string().optional(),
+  productId: z.string().min(1),
+  noOfBags: z.union([z.string(), z.number()]).optional(),
+  hammali: z.union([z.string(), z.number()]).optional(),
+  weight: z.union([z.string(), z.number()]),
+  rate: z.union([z.string(), z.number()]),
+  payableAmount: z.union([z.string(), z.number()]).optional(),
+  paidAmount: z.union([z.string(), z.number()]).optional(),
+  balance: z.union([z.string(), z.number()]).optional(),
+  paymentStatus: z.string().optional()
+})
+
+const purchaseUpdateSchema = purchaseCreateSchema.extend({
+  id: z.string().min(1),
+  balanceAmount: z.union([z.string(), z.number()]).optional(),
+  status: z.string().optional()
+})
+
+function parseRequiredNonNegative(value: unknown, label: string): number | NextResponse {
+  const num = parseNonNegativeNumber(value)
+  if (num === null) {
+    return NextResponse.json({ error: `${label} must be a non-negative number` }, { status: 400 })
+  }
+  return num
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    console.log('Received body:', JSON.stringify(body, null, 2))
-
+    const parsed = await parseJsonWithSchema(request, purchaseCreateSchema)
+    if (!parsed.ok) return parsed.response
+    const body = parsed.data
     const {
       companyId,
       billNumber,
@@ -24,42 +60,37 @@ export async function POST(request: NextRequest) {
       payableAmount,
       paidAmount,
       balance,
-      paymentStatus,
+      paymentStatus
     } = body
 
-    console.log('Extracted values:', {
-      companyId,
-      billNumber,
-      billDate,
-      farmerName,
-      productId,
-      weight,
-      rate,
-      payableAmount,
-      paidAmount,
-      balance
-    })
-
-    // Validate required fields
-    if (!companyId || !farmerName || !productId || !weight || !rate) {
-      console.log('Validation failed - missing required fields')
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+    const farmerPhone = normalizeTenDigitPhone(farmerContact)
+    if (farmerContact !== undefined && farmerContact !== null && farmerContact !== '' && !farmerPhone) {
+      return NextResponse.json({ error: 'Farmer contact must be exactly 10 digits' }, { status: 400 })
     }
 
-    // Get user from cookies
-    const cookieStore = await cookies()
-    const userId = cookieStore.get('userId')?.value || 'test-user'
+    const parsedWeight = parseRequiredNonNegative(weight, 'Weight')
+    if (parsedWeight instanceof NextResponse) return parsedWeight
+    const parsedRate = parseRequiredNonNegative(rate, 'Rate')
+    if (parsedRate instanceof NextResponse) return parsedRate
+    const parsedPayable = parseRequiredNonNegative(payableAmount, 'Payable amount')
+    if (parsedPayable instanceof NextResponse) return parsedPayable
+    const parsedPaid = parseNonNegativeNumber(paidAmount) ?? 0
+    if (parsedPaid > parsedPayable) {
+      return NextResponse.json({ error: 'Paid amount cannot exceed payable amount' }, { status: 400 })
+    }
+    const parsedBalance = parseNonNegativeNumber(balance) ?? 0
+    const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
 
-    console.log('User ID from cookies:', userId)
+    const auth = getRequestAuthContext(request)
+    const userId = auth?.userId || 'system'
 
-    console.log('Creating farmer for:', farmerName, 'company:', companyId)
-
-    // Find or create farmer
     let farmer = await prisma.farmer.findFirst({
       where: {
         companyId,
-        name: farmerName,
-      },
+        name: farmerName
+      }
     })
 
     if (!farmer) {
@@ -68,80 +99,68 @@ export async function POST(request: NextRequest) {
           companyId,
           name: farmerName,
           address: farmerAddress || null,
-          phone1: farmerContact || null,
-          krashakAnubandhNumber: krashakAnubandhNumber || null,
-        },
+          phone1: farmerPhone,
+          krashakAnubandhNumber: krashakAnubandhNumber || null
+        }
       })
-      console.log('Created new farmer:', farmer.id)
     } else {
-      // Update existing farmer with new information if provided
       farmer = await prisma.farmer.update({
         where: { id: farmer.id },
         data: {
           address: farmerAddress || farmer.address,
-          phone1: farmerContact || farmer.phone1,
-          krashakAnubandhNumber: krashakAnubandhNumber || farmer.krashakAnubandhNumber,
-        },
+          phone1: farmerPhone || farmer.phone1,
+          krashakAnubandhNumber: krashakAnubandhNumber || farmer.krashakAnubandhNumber
+        }
       })
-      console.log('Updated existing farmer:', farmer.id)
     }
 
-    console.log('Creating purchase bill...')
-
-    // Create purchase bill
     const purchaseBill = await prisma.purchaseBill.create({
       data: {
         companyId,
-        billNo: billNumber,
+        billNo: String(billNumber),
         billDate: new Date(billDate),
         farmerId: farmer.id,
-        totalAmount: parseFloat(payableAmount) || 0,
-        paidAmount: parseFloat(paidAmount) || 0,
-        balanceAmount: parseFloat(balance) || 0,
+        totalAmount: parsedPayable,
+        paidAmount: parsedPaid,
+        balanceAmount: parsedBalance,
         status: paymentStatus || 'unpaid',
-        createdBy: userId,
-      },
+        createdBy: userId
+      }
     })
 
-    console.log('Purchase bill created:', purchaseBill.id)
-
-    // Create purchase item
     await prisma.purchaseItem.create({
       data: {
         purchaseBillId: purchaseBill.id,
         productId,
-        qty: parseFloat(weight) || 0,
-        rate: parseFloat(rate) || 0,
-        hammali: parseFloat(hammali) || 0,
-        bags: parseInt(noOfBags) || null,
+        qty: parsedWeight,
+        rate: parsedRate,
+        hammali: parsedHammali,
+        bags: noOfBags ? parseInt(String(noOfBags), 10) : null,
         markaNo: markaNumber || null,
-        amount: parseFloat(payableAmount) || 0,
-      },
+        amount: parsedPayable
+      }
     })
 
-    console.log('Purchase item created')
-
-    // Update stock ledger
     await prisma.stockLedger.create({
       data: {
         companyId,
         entryDate: new Date(billDate),
         productId,
         type: 'purchase',
-        qtyIn: parseFloat(weight) || 0,
+        qtyIn: parsedWeight,
         refTable: 'purchase_bills',
-        refId: purchaseBill.id,
-      },
+        refId: purchaseBill.id
+      }
     })
-
-    console.log('Stock ledger updated')
 
     return NextResponse.json({ success: true, purchaseBill })
   } catch (error) {
-    console.error('Error creating purchase bill:', error)
-    const errorMessage = error instanceof Error ? error.message : 'Internal server error'
-    const errorDetails = error instanceof Error ? error.toString() : String(error)
-    return NextResponse.json({ error: errorMessage, details: errorDetails }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : 'Internal server error'
+      },
+      { status: 500 }
+    )
   }
 }
 
@@ -157,55 +176,49 @@ export async function GET(request: NextRequest) {
     if (!companyId) {
       return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
     }
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
     if (billId) {
-      // Get single purchase bill by ID
       const purchaseBill = await prisma.purchaseBill.findFirst({
-        where: { 
-          id: billId,
-          companyId 
-        },
+        where: { id: billId, companyId },
         include: {
           farmer: true,
           purchaseItems: {
             include: {
-              product: true,
-            },
-          },
-        },
+              product: true
+            }
+          }
+        }
       })
 
       if (!purchaseBill) {
         return NextResponse.json({ error: 'Purchase bill not found' }, { status: 404 })
       }
-
       return NextResponse.json(purchaseBill)
     }
 
     if (last === 'true') {
-      // Get the highest bill number for the company
-      const lastBill = await prisma.purchaseBill.findFirst({
+      const bills = await prisma.purchaseBill.findMany({
         where: { companyId },
-        orderBy: { billNo: 'desc' },
-        select: { billNo: true },
+        select: { billNo: true }
       })
-
-      const lastBillNumber = lastBill ? parseInt(lastBill.billNo) : 0
+      const lastBillNumber = bills.reduce((max, bill) => {
+        const value = Number.parseInt(bill.billNo, 10)
+        return Number.isFinite(value) ? Math.max(max, value) : max
+      }, 0)
       return NextResponse.json({ lastBillNumber })
     }
 
-    // Default: return all purchase bills for the company with optional date filtering
-    const whereClause: any = { companyId }
-    
-    // Add date filtering if provided
+    const whereClause: {
+      companyId: string
+      billDate?: { gte?: Date; lte?: Date }
+    } = { companyId }
+
     if (dateFrom || dateTo) {
       whereClause.billDate = {}
-      if (dateFrom) {
-        whereClause.billDate.gte = new Date(dateFrom)
-      }
-      if (dateTo) {
-        whereClause.billDate.lte = new Date(dateTo)
-      }
+      if (dateFrom) whereClause.billDate.gte = new Date(dateFrom)
+      if (dateTo) whereClause.billDate.lte = new Date(dateTo)
     }
 
     const purchaseBills = await prisma.purchaseBill.findMany({
@@ -214,16 +227,15 @@ export async function GET(request: NextRequest) {
         farmer: true,
         purchaseItems: {
           include: {
-            product: true,
-          },
-        },
+            product: true
+          }
+        }
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: 'desc' }
     })
 
     return NextResponse.json(purchaseBills)
-  } catch (error) {
-    console.error('Error fetching purchase bills:', error)
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
@@ -237,19 +249,11 @@ export async function DELETE(request: NextRequest) {
     if (!billId || !companyId) {
       return NextResponse.json({ error: 'Bill ID and Company ID are required' }, { status: 400 })
     }
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
 
-    console.log('Deleting purchase bill:', billId, 'for company:', companyId)
-
-    // Get user from cookies
-    const cookieStore = await cookies()
-    const userId = cookieStore.get('userId')?.value || 'test-user'
-
-    // Find the purchase bill
     const purchaseBill = await prisma.purchaseBill.findFirst({
-      where: { 
-        id: billId,
-        companyId 
-      },
+      where: { id: billId, companyId },
       include: {
         purchaseItems: true
       }
@@ -259,8 +263,6 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Purchase bill not found' }, { status: 404 })
     }
 
-    // Delete related records in order
-    // 1. Delete stock ledger entries
     await prisma.stockLedger.deleteMany({
       where: {
         refTable: 'purchase_bills',
@@ -268,33 +270,30 @@ export async function DELETE(request: NextRequest) {
       }
     })
 
-    // 2. Delete purchase items
     await prisma.purchaseItem.deleteMany({
-      where: {
-        purchaseBillId: billId
-      }
+      where: { purchaseBillId: billId }
     })
 
-    // 3. Delete the purchase bill
     await prisma.purchaseBill.delete({
       where: { id: billId }
     })
 
-    console.log('Purchase bill deleted successfully:', billId)
-
     return NextResponse.json({ success: true, message: 'Purchase bill deleted successfully' })
   } catch (error) {
-    console.error('Error deleting purchase bill:', error)
-    const errorMessage = error instanceof Error ? error.message : 'Internal server error'
-    return NextResponse.json({ error: errorMessage }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : 'Internal server error'
+      },
+      { status: 500 }
+    )
   }
 }
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    console.log('Received body:', JSON.stringify(body, null, 2))
-
+    const parsed = await parseJsonWithSchema(request, purchaseUpdateSchema)
+    if (!parsed.ok) return parsed.response
+    const body = parsed.data
     const {
       id,
       companyId,
@@ -312,42 +311,34 @@ export async function PUT(request: NextRequest) {
       payableAmount,
       paidAmount,
       balanceAmount,
-      status,
+      status
     } = body
 
-    console.log('Extracted values:', {
-      id,
-      companyId,
-      billNumber,
-      billDate,
-      farmerName,
-      productId,
-      weight,
-      rate,
-      payableAmount,
-      paidAmount,
-      balanceAmount,
-      status,
-    })
-
-    // Validate required fields
-    if (!id || !companyId || !farmerName || !productId || !weight || !rate) {
-      console.log('Validation failed - missing required fields')
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+    const farmerPhone = normalizeTenDigitPhone(farmerContact)
+    if (farmerContact !== undefined && farmerContact !== null && farmerContact !== '' && !farmerPhone) {
+      return NextResponse.json({ error: 'Farmer contact must be exactly 10 digits' }, { status: 400 })
     }
 
-    // Get user from cookies
-    const cookieStore = await cookies()
-    const userId = cookieStore.get('userId')?.value || 'test-user'
+    const parsedWeight = parseRequiredNonNegative(weight, 'Weight')
+    if (parsedWeight instanceof NextResponse) return parsedWeight
+    const parsedRate = parseRequiredNonNegative(rate, 'Rate')
+    if (parsedRate instanceof NextResponse) return parsedRate
+    const parsedPayable = parseRequiredNonNegative(payableAmount, 'Payable amount')
+    if (parsedPayable instanceof NextResponse) return parsedPayable
+    const parsedPaid = parseNonNegativeNumber(paidAmount) ?? 0
+    if (parsedPaid > parsedPayable) {
+      return NextResponse.json({ error: 'Paid amount cannot exceed payable amount' }, { status: 400 })
+    }
+    const parsedBalance = parseNonNegativeNumber(balanceAmount) ?? 0
+    const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
 
-    console.log('User ID from cookies:', userId)
-
-    // Find or create farmer
     let farmer = await prisma.farmer.findFirst({
       where: {
         companyId,
-        name: farmerName,
-      },
+        name: farmerName
+      }
     })
 
     if (!farmer) {
@@ -356,92 +347,77 @@ export async function PUT(request: NextRequest) {
           companyId,
           name: farmerName,
           address: farmerAddress || null,
-          phone1: farmerContact || null,
-          krashakAnubandhNumber: krashakAnubandhNumber || null,
-        },
+          phone1: farmerPhone,
+          krashakAnubandhNumber: krashakAnubandhNumber || null
+        }
       })
-      console.log('Created new farmer:', farmer.id)
     } else {
-      // Update existing farmer with new information if provided
       farmer = await prisma.farmer.update({
         where: { id: farmer.id },
         data: {
           address: farmerAddress || farmer.address,
-          phone1: farmerContact || farmer.phone1,
-          krashakAnubandhNumber: krashakAnubandhNumber || farmer.krashakAnubandhNumber,
-        },
+          phone1: farmerPhone || farmer.phone1,
+          krashakAnubandhNumber: krashakAnubandhNumber || farmer.krashakAnubandhNumber
+        }
       })
-      console.log('Updated existing farmer:', farmer.id)
     }
-
-    console.log('Updating purchase bill...')
-
-    // Update purchase bill
-    const purchaseBillData = {
-      companyId,
-      billNo: billNumber,
-      billDate: new Date(billDate),
-      farmerId: farmer.id,
-      totalAmount: parseFloat(payableAmount) || 0,
-      paidAmount: parseFloat(paidAmount) || 0,
-      balanceAmount: parseFloat(balanceAmount) || 0,
-      status: status || ((parseFloat(balanceAmount) || 0) === 0 ? 'paid' : (parseFloat(balanceAmount) || 0) === (parseFloat(payableAmount) || 0) ? 'unpaid' : 'partial'),
-    }
-
-    console.log('Purchase bill data:', purchaseBillData)
 
     const purchaseBill = await prisma.purchaseBill.update({
       where: { id },
-      data: purchaseBillData,
+      data: {
+        companyId,
+        billNo: String(billNumber),
+        billDate: new Date(billDate),
+        farmerId: farmer.id,
+        totalAmount: parsedPayable,
+        paidAmount: parsedPaid,
+        balanceAmount: parsedBalance,
+        status: status || 'unpaid'
+      }
     })
 
-    console.log('Purchase bill updated:', purchaseBill.id)
-
-    // Update existing purchase item
     const existingItem = await prisma.purchaseItem.findFirst({
-      where: { purchaseBillId: id },
+      where: { purchaseBillId: id }
     })
-
     if (existingItem) {
       await prisma.purchaseItem.update({
         where: { id: existingItem.id },
         data: {
           productId,
-          qty: parseFloat(weight) || 0,
-          rate: parseFloat(rate) || 0,
-          hammali: parseFloat(hammali) || 0,
-          bags: parseFloat(noOfBags) || 0,
-          amount: parseFloat(payableAmount) || 0,
-        },
+          qty: parsedWeight,
+          rate: parsedRate,
+          hammali: parsedHammali,
+          bags: noOfBags ? parseInt(String(noOfBags), 10) : null,
+          amount: parsedPayable
+        }
       })
-      console.log('Purchase item updated:', existingItem.id)
     }
 
-    // Update stock ledger
     const existingLedger = await prisma.stockLedger.findFirst({
       where: {
         refTable: 'purchase_bills',
-        refId: id,
-      },
+        refId: id
+      }
     })
-
     if (existingLedger) {
       await prisma.stockLedger.update({
         where: { id: existingLedger.id },
         data: {
+          companyId,
           entryDate: new Date(billDate),
           productId,
-          qtyIn: parseFloat(weight) || 0,
-        },
+          qtyIn: parsedWeight
+        }
       })
-      console.log('Stock ledger updated:', existingLedger.id)
     }
 
     return NextResponse.json({ success: true, purchaseBill })
   } catch (error) {
-    console.error('Error updating purchase bill:', error)
-    const errorMessage = error instanceof Error ? error.message : 'Internal server error'
-    const errorDetails = error instanceof Error ? error.toString() : String(error)
-    return NextResponse.json({ error: errorMessage, details: errorDetails }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : 'Internal server error'
+      },
+      { status: 500 }
+    )
   }
 }

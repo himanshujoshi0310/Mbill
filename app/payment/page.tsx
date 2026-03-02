@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { CreditCard, Plus, Eye, TrendingUp, TrendingDown, DollarSign } from 'lucide-react'
+import { isAbortError } from '@/lib/http'
 
 interface PurchaseBill {
   id: string
@@ -20,11 +21,16 @@ interface PurchaseBill {
   paidAmount: number
   balanceAmount: number
   status: string
-  supplier: {
+  farmer?: {
     name: string
     address: string
     krashakAnubandhNumber: string
-  }
+  } | null
+  supplier?: {
+    name: string
+    address: string
+    krashakAnubandhNumber: string
+  } | null
 }
 
 interface SalesBill {
@@ -81,35 +87,53 @@ function PaymentPageContent() {
   const [dateTo, setDateTo] = useState('')
 
   useEffect(() => {
-    if (companyId) {
-      fetchPaymentData()
-    }
+    if (!companyId) return
+    const controller = new AbortController()
+    void fetchPaymentData(controller.signal)
+    return () => controller.abort()
   }, [companyId])
 
-  const fetchPaymentData = async () => {
+  const fetchPaymentData = async (signal?: AbortSignal) => {
     try {
       setLoading(true)
       
       // Fetch all data
       const [purchaseRes, salesRes, paymentsRes] = await Promise.all([
-        fetch(`/api/purchase-bills?companyId=${companyId}`),
-        fetch(`/api/sales-bills?companyId=${companyId}`),
-        fetch(`/api/payments?companyId=${companyId}`)
+        fetch(`/api/purchase-bills?companyId=${companyId}`, { signal }),
+        fetch(`/api/sales-bills?companyId=${companyId}`, { signal }),
+        fetch(`/api/payments?companyId=${companyId}`, { signal })
       ])
+      if (signal?.aborted) return
+
+      if ([purchaseRes.status, salesRes.status, paymentsRes.status].includes(403)) {
+        setPurchaseBills([])
+        setSalesBills([])
+        setPayments([])
+        setLoading(false)
+        return
+      }
       
       const purchaseData = await purchaseRes.json()
       const salesData = await salesRes.json()
       const paymentsData = await paymentsRes.json()
       
-      setPurchaseBills(purchaseData)
-      setSalesBills(salesData)
-      setPayments(paymentsData)
+      setPurchaseBills(Array.isArray(purchaseData) ? purchaseData : [])
+      setSalesBills(Array.isArray(salesData) ? salesData : [])
+      setPayments(Array.isArray(paymentsData) ? paymentsData : [])
       
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching payment data:', error)
+      setPurchaseBills([])
+      setSalesBills([])
+      setPayments([])
       setLoading(false)
     }
+  }
+
+  const getPurchasePartyName = (bill: PurchaseBill) => {
+    return bill.supplier?.name || bill.farmer?.name || 'Unknown'
   }
 
   const getFilteredPayments = () => {
@@ -276,7 +300,7 @@ function PaymentPageContent() {
                         <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
                         <TableCell>
                           {activeTab === 'purchase' 
-                            ? (bill as PurchaseBill).supplier.name 
+                            ? getPurchasePartyName(bill as PurchaseBill)
                             : (bill as SalesBill).party.name
                           }
                         </TableCell>

@@ -37,27 +37,32 @@ async function main() {
     data: { id: 'trader1', name: 'Trader One Enterprises' }
   })
 
+  // System trader for super-admin user
+  const systemTrader = await prisma.trader.create({
+    data: { id: 'system', name: 'System' }
+  })
+
   // Create Users with hashed passwords
   console.log('🔐 Creating users...')
-  const password1 = await bcrypt.hash('1234', 10)
+  const password1 = await bcrypt.hash('user1234', 10)
   const password2 = await bcrypt.hash('password', 10)
 
   const user1 = await prisma.user.create({
     data: {
-      userId: 'admin',
+      userId: 'demo_user_1',
       password: password1,
-      name: 'Admin User',
-      role: 'admin',
+      name: 'Demo User One',
+      role: 'company_user',
       traderId: trader1.id,
     },
   })
 
   const user2 = await prisma.user.create({
     data: {
-      userId: 'admin',
+      userId: 'demo_user_2',
       password: password2,
-      name: 'Admin User',
-      role: 'admin',
+      name: 'Demo User Two',
+      role: 'company_user',
       traderId: trader2.id,
     },
   })
@@ -67,9 +72,24 @@ async function main() {
       userId: 'operator',
       password: await bcrypt.hash('operator123', 10),
       name: 'Operator User',
-      role: 'user',
+      role: 'company_user',
       traderId: trader1.id,
     },
+  })
+
+  // Super-admin user
+  console.log('🔑 Creating super-admin user...')
+  const superAdminUserId = process.env.SUPER_ADMIN_USER_ID || 'superadmin'
+  const superAdminPassword = process.env.SUPER_ADMIN_PASSWORD || 'super-admin-2026-secure'
+  const hashedSuper = await bcrypt.hash(superAdminPassword, 10)
+  const superUser = await prisma.user.create({
+    data: {
+      userId: superAdminUserId,
+      password: hashedSuper,
+      name: 'Super Admin',
+      role: 'SUPER_ADMIN',
+      traderId: systemTrader.id,
+    }
   })
 
   // Create Companies

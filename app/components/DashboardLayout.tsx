@@ -19,20 +19,17 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
     // Check authentication status via API call
     const checkAuth = async () => {
       try {
-        const token = document.cookie.replace(/(?:(?:^|.*;\s*)auth-token\s*\=\s*([^;]*).*$)|^.*$/, '$1');
-        const response = await fetch('/api/auth/me', {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        })
+        const response = await fetch('/api/auth/me')
         if (response.ok) {
           const data = await response.json()
-          setCurrentUser(data.userId)
+          setCurrentUser(data?.user?.userId || data?.userId || null)
         } else {
-          router.push('/login')
+          if (response.status === 401) {
+            router.push('/login')
+          }
         }
       } catch (error) {
-        router.push('/login')
+        void error
       }
     }
     
@@ -45,15 +42,10 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
 
   const handleLogout = async () => {
     try {
-      const token = document.cookie.replace(/(?:(?:^|.*;\s*)auth-token\s*\=\s*([^;]*).*$)|^.*$/, '$1');
-      await fetch('/api/auth/logout', { 
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
+      await fetch('/api/auth/logout', { method: 'POST' })
     } catch (error) {
       // Even if API call fails, redirect to login
+      void error
     }
     setCurrentUser(null)
     router.push('/login')
@@ -72,7 +64,7 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
           <div className="max-w-7xl mx-auto flex justify-between items-center">
             <div className="flex items-center space-x-4">
               <h1 className="text-xl font-semibold text-gray-900">Dashboard</h1>
-              <span className="text-sm text-gray-500">Company: {companyId}</span>
+              <span className="text-sm text-gray-500">Multi-company mode</span>
             </div>
             {currentUser && (
               <div className="flex items-center space-x-2">

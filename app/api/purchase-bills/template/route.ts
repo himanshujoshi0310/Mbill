@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
+import { ensureCompanyAccess, requireRoles } from '@/lib/api-security'
 
 export async function GET(request: NextRequest) {
+  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin', 'company_user'])
+  if (!authResult.ok) return authResult.response
+
   try {
+    const companyId =
+      new URL(request.url).searchParams.get('companyId')?.trim() || authResult.auth.companyId || null
+    if (!companyId) {
+      return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
+    }
+
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
     // Create template data
     const templateData = [
       {

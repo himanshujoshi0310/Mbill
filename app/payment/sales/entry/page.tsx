@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { ArrowLeft, CreditCard, DollarSign } from 'lucide-react'
+import { isAbortError } from '@/lib/http'
 
 interface SalesBill {
   id: string
@@ -69,35 +70,50 @@ function SalesPaymentEntryPageContent() {
   const [txnRef, setTxnRef] = useState('')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const toNonNegative = (value: string) => {
+    if (value === '') return ''
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return ''
+    return String(Math.max(0, parsed))
+  }
 
   useEffect(() => {
-    if (companyId) {
-      fetchSalesBills()
-      fetchBanks()
-      fetchPaymentModes()
+    if (!companyId) {
+      setLoading(false)
+      return
     }
+    const controller = new AbortController()
+    void fetchSalesBills(controller.signal)
+    void fetchBanks(controller.signal)
+    void fetchPaymentModes(controller.signal)
+    return () => controller.abort()
   }, [companyId])
 
-  const fetchBanks = async () => {
+  const fetchBanks = async (signal?: AbortSignal) => {
     try {
-      const response = await fetch(`/api/banks?companyId=${companyId}`)
+      const response = await fetch(`/api/banks?companyId=${companyId}`, { signal })
+      if (signal?.aborted) return
       if (response.ok) {
         const data = await response.json()
-        setBanks(data)
+        setBanks(Array.isArray(data) ? data : [])
       }
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching banks:', error)
     }
   }
 
-  const fetchPaymentModes = async () => {
+  const fetchPaymentModes = async (signal?: AbortSignal) => {
     try {
-      const response = await fetch(`/api/payment-modes?companyId=${companyId}`)
+      const response = await fetch(`/api/payment-modes?companyId=${companyId}`, { signal })
+      if (signal?.aborted) return
       if (response.ok) {
         const data = await response.json()
-        setPaymentModes(data.filter((pm: PaymentMode) => pm.isActive))
+        const rows = Array.isArray(data) ? data : []
+        setPaymentModes(rows.filter((pm: PaymentMode) => pm.isActive))
       }
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching payment modes:', error)
     }
   }
@@ -108,17 +124,21 @@ function SalesPaymentEntryPageContent() {
     }
   }, [billId])
 
-  const fetchSalesBills = async () => {
+  const fetchSalesBills = async (signal?: AbortSignal) => {
     try {
-      const response = await fetch(`/api/sales-bills?companyId=${companyId}`)
+      const response = await fetch(`/api/sales-bills?companyId=${companyId}`, { signal })
+      if (signal?.aborted) return
       const data = await response.json()
+      const rows = Array.isArray(data) ? data : []
       
       // Filter bills that have pending balance
-      const pendingBills = data.filter((bill: SalesBill) => bill.balanceAmount > 0)
+      const pendingBills = rows.filter((bill: SalesBill) => Number(bill?.balanceAmount || 0) > 0)
       setSalesBills(pendingBills)
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching sales bills:', error)
+      setSalesBills([])
       setLoading(false)
     }
   }
@@ -263,9 +283,10 @@ function SalesPaymentEntryPageContent() {
                     <Input
                       id="amount"
                       type="number"
+                      min="0"
                       step="0.01"
                       value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
+                      onChange={(e) => setAmount(toNonNegative(e.target.value))}
                       placeholder="Enter amount"
                       required
                     />
