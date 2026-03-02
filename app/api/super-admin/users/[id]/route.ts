@@ -12,7 +12,7 @@ const updateUserSchema = z
     traderId: z.string().trim().min(1).optional(),
     companyId: z.string().trim().min(1).optional().nullable(),
     userId: z.string().trim().min(1).max(50).optional(),
-    password: z.string().min(6).optional(),
+    password: z.string().min(6, 'Password must be at least 6 characters'),
     name: z.string().trim().max(100).optional().nullable(),
     locked: z.boolean().optional(),
     active: z.boolean().optional()
@@ -136,6 +136,10 @@ export async function PUT(
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
+    const isCurrentSessionUser =
+      (authResult.auth.userDbId && existingUser.id === authResult.auth.userDbId) ||
+      (existingUser.userId === authResult.auth.userId && existingUser.traderId === authResult.auth.traderId)
+
     const nextTraderId = parsedBody.data.traderId?.trim() || existingUser.traderId
     const nextCompanyId =
       parsedBody.data.companyId === undefined
@@ -144,6 +148,14 @@ export async function PUT(
     const nextUserId = parsedBody.data.userId?.trim().toLowerCase() || existingUser.userId
     const lockedFromActive = parsedBody.data.active === undefined ? undefined : !parsedBody.data.active
     const nextLocked = parsedBody.data.locked ?? lockedFromActive
+
+    if (nextLocked === true && isCurrentSessionUser) {
+      return NextResponse.json({ error: 'Cannot lock current session user' }, { status: 403 })
+    }
+
+    if (nextLocked === true && normalizeAppRole(existingUser.role) === 'super_admin') {
+      return NextResponse.json({ error: 'Cannot lock super admin users' }, { status: 403 })
+    }
 
     if (normalizeAppRole(existingUser.role) !== 'super_admin' && !nextCompanyId) {
       return NextResponse.json(
@@ -211,9 +223,7 @@ export async function PUT(
     if (parsedBody.data.userId !== undefined) updateData.userId = nextUserId
     if (parsedBody.data.name !== undefined) updateData.name = normalizeOptionalString(parsedBody.data.name)
     if (nextLocked !== undefined) updateData.locked = nextLocked
-    if (parsedBody.data.password) {
-      updateData.password = await bcrypt.hash(parsedBody.data.password, 12)
-    }
+    updateData.password = await bcrypt.hash(parsedBody.data.password, 12)
 
     const user = await prisma.user.update({
       where: { id: userId },

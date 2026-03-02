@@ -37,6 +37,10 @@ export async function PATCH(
       return NextResponse.json({ error: 'Company not found' }, { status: 404 })
     }
 
+    if (parsedBody.data.locked && authResult.auth.companyId === companyId) {
+      return NextResponse.json({ error: 'Cannot lock current session company' }, { status: 403 })
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       const company = await tx.company.update({
         where: { id: companyId },

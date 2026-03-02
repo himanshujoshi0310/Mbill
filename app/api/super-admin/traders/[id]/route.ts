@@ -118,6 +118,10 @@ export async function PUT(
       return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
     }
 
+    if (parsedBody.data.locked === true && authResult.auth.traderId === traderId) {
+      return NextResponse.json({ error: 'Cannot lock current session trader' }, { status: 403 })
+    }
+
     const nextName = parsedBody.data.name?.trim()
     if (nextName && nextName !== existingTrader.name) {
       const duplicate = await prisma.trader.findFirst({

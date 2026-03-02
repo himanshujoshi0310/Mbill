@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import Sidebar from './Sidebar'
+import { isAbortError } from '@/lib/http'
 
 interface DashboardLayoutProps {
   children: React.ReactNode
@@ -13,6 +14,7 @@ interface DashboardLayoutProps {
 export default function DashboardLayout({ children, companyId }: DashboardLayoutProps) {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [currentUser, setCurrentUser] = useState<string | null>(null)
+  const [currentCompanyName, setCurrentCompanyName] = useState<string | null>(null)
   const router = useRouter()
 
   useEffect(() => {
@@ -35,6 +37,37 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
     
     checkAuth()
   }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadCompanyName = async () => {
+      if (!companyId) {
+        setCurrentCompanyName('Not selected')
+        return
+      }
+
+      try {
+        const response = await fetch('/api/companies', { signal: controller.signal })
+        if (!response.ok) {
+          setCurrentCompanyName(companyId)
+          return
+        }
+        const companies = await response.json()
+        if (!Array.isArray(companies)) {
+          setCurrentCompanyName(companyId)
+          return
+        }
+        const currentCompany = companies.find((row) => String(row?.id) === companyId)
+        setCurrentCompanyName(currentCompany?.name || companyId)
+      } catch (error) {
+        if (isAbortError(error)) return
+        setCurrentCompanyName(companyId)
+      }
+    }
+
+    void loadCompanyName()
+    return () => controller.abort()
+  }, [companyId])
 
   const toggleSidebar = () => {
     setIsSidebarCollapsed(!isSidebarCollapsed)
@@ -70,6 +103,9 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
               <div className="flex items-center space-x-2">
                 <span className="text-sm text-gray-600">Logged in as:</span>
                 <span className="font-medium text-blue-600">{currentUser}</span>
+                <span className="text-gray-300">|</span>
+                <span className="text-sm text-gray-600">Company:</span>
+                <span className="font-medium text-slate-700">{currentCompanyName || companyId || 'Not selected'}</span>
                 <Button
                   variant="outline"
                   size="sm"

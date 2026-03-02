@@ -4,6 +4,7 @@ import "./globals.css";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SessionProvider } from "@/components/SessionProvider";
 import { useEffect } from "react";
+import { isAbortError } from "@/lib/http";
 
 export default function RootLayout({
   children,
@@ -13,6 +14,19 @@ export default function RootLayout({
   // Add global fetch interceptor for authentication with automatic token refresh
   useEffect(() => {
     const originalFetch = window.fetch;
+    const abortRejectionHandler = (event: PromiseRejectionEvent) => {
+      if (isAbortError(event.reason)) {
+        event.preventDefault()
+      }
+    }
+    const abortErrorHandler = (event: ErrorEvent) => {
+      if (isAbortError(event.error) || isAbortError(event.message)) {
+        event.preventDefault()
+      }
+    }
+
+    window.addEventListener('unhandledrejection', abortRejectionHandler)
+    window.addEventListener('error', abortErrorHandler)
 
     const getCookieValue = (name: string): string | null => {
       const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`))
@@ -118,6 +132,8 @@ export default function RootLayout({
     
     return () => {
       window.fetch = originalFetch;
+      window.removeEventListener('unhandledrejection', abortRejectionHandler)
+      window.removeEventListener('error', abortErrorHandler)
     };
   }, []);
 

@@ -23,7 +23,6 @@ import {
   Scale,
   Landmark,
   Bell,
-  Database,
   Download
 } from 'lucide-react'
 import StockManagementTab from './components/StockManagementTab'
@@ -134,7 +133,6 @@ function MainDashboardPageContent() {
   const [companies, setCompanies] = useState<CompanyOption[]>([])
   const [selectedCompanyIds, setSelectedCompanyIds] = useState<string[]>([])
   const [primaryCompanyId, setPrimaryCompanyId] = useState<string>('')
-  const [seedLoading, setSeedLoading] = useState(false)
   const [uiMessage, setUiMessage] = useState<string | null>(null)
   const [uiError, setUiError] = useState<string | null>(null)
   const [fetchFailures, setFetchFailures] = useState<string[]>([])
@@ -534,56 +532,6 @@ function MainDashboardPageContent() {
     }
   }, [data.purchaseBills, data.salesBills, fetchFailures.length, stockNotifications])
 
-  const refreshDashboard = async () => {
-    if (selectedCompanyIds.length === 0) return
-    setLoading(true)
-    try {
-      await fetchDashboardData(selectedCompanyIds)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleSeedAllMasters = async () => {
-    if (!primaryCompanyId || seedLoading) return
-    setUiMessage(null)
-    setUiError(null)
-    setSeedLoading(true)
-    const endpoints = [
-      '/api/parties',
-      '/api/farmers',
-      '/api/suppliers',
-      '/api/products',
-      '/api/banks',
-      '/api/markas',
-      '/api/transports',
-      '/api/units',
-      '/api/payment-modes'
-    ]
-    const results = await Promise.all(
-      endpoints.map(async (endpoint) => {
-        try {
-          const response = await fetch(`${endpoint}?companyId=${primaryCompanyId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ seed: true })
-          })
-          return { endpoint, ok: response.ok }
-        } catch {
-          return { endpoint, ok: false }
-        }
-      })
-    )
-    const okCount = results.filter((item) => item.ok).length
-    if (okCount === endpoints.length) {
-      setUiMessage(`Dummy seed completed for primary company: ${okCount}/${endpoints.length} masters updated.`)
-    } else {
-      setUiError(`Seed completed with issues: ${okCount}/${endpoints.length} succeeded.`)
-    }
-    await refreshDashboard()
-    setSeedLoading(false)
-  }
-
   const downloadTextFile = (name: string, content: string, mimeType: string) => {
     const blob = new Blob([content], { type: mimeType })
     const url = URL.createObjectURL(blob)
@@ -699,10 +647,6 @@ function MainDashboardPageContent() {
                   <Button onClick={() => handleNavigation('/purchase/entry')}>
                     <Plus className="mr-2 h-4 w-4" />
                     Quick Bill
-                  </Button>
-                  <Button variant="outline" onClick={handleSeedAllMasters} disabled={seedLoading}>
-                    <Database className="mr-2 h-4 w-4" />
-                    {seedLoading ? 'Seeding...' : 'Seed All Masters'}
                   </Button>
                   <Button variant="outline" onClick={handleExportBackup}>
                     <Download className="mr-2 h-4 w-4" />

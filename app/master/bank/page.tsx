@@ -227,7 +227,6 @@ export default function BankMasterPage() {
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
-              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
               <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
               <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
                 <Plus className="h-4 w-4" />

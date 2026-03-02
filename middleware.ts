@@ -18,6 +18,11 @@ const lockBypassApiRoutes = new Set([
   '/api/auth/logout',
   '/api/super-admin/logout'
 ])
+const lockBypassApiPatterns = [
+  /^\/api\/super-admin\/traders\/[^/]+\/lock$/,
+  /^\/api\/super-admin\/companies\/[^/]+\/lock$/,
+  /^\/api\/super-admin\/users\/[^/]+\/lock$/
+]
 
 type RateLimitEntry = {
   count: number
@@ -82,6 +87,14 @@ function normalizePath(pathname: string): string {
     return pathname.slice(0, -1)
   }
   return pathname
+}
+
+function isLockBypassApiRoute(pathname: string): boolean {
+  if (lockBypassApiRoutes.has(pathname)) {
+    return true
+  }
+
+  return lockBypassApiPatterns.some((pattern) => pattern.test(pathname))
 }
 
 async function ensureCompanyScope(
@@ -267,7 +280,7 @@ export async function middleware(request: NextRequest) {
           ? 'User is deleted'
           : null
 
-    if (deletedReason && !lockBypassApiRoutes.has(pathname)) {
+    if (deletedReason && !isLockBypassApiRoute(pathname)) {
       return NextResponse.json({ error: deletedReason }, { status: 403 })
     }
 
@@ -279,7 +292,7 @@ export async function middleware(request: NextRequest) {
           ? 'User is locked'
           : null
 
-    if (lockedReason && !lockBypassApiRoutes.has(pathname)) {
+    if (lockedReason && !isLockBypassApiRoute(pathname)) {
       return NextResponse.json({ error: lockedReason }, { status: 403 })
     }
 

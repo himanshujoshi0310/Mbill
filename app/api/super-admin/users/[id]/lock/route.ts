@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
-import { requireRoles } from '@/lib/api-security'
+import { normalizeAppRole, requireRoles } from '@/lib/api-security'
 import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
 
 const idParamsSchema = z.object({ id: z.string().trim().min(1, 'User ID is required') })
@@ -35,6 +35,18 @@ export async function PATCH(
 
     if (!existing) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    }
+
+    const isCurrentSessionUser =
+      (authResult.auth.userDbId && existing.id === authResult.auth.userDbId) ||
+      (existing.userId === authResult.auth.userId && existing.traderId === authResult.auth.traderId)
+
+    if (parsedBody.data.locked && isCurrentSessionUser) {
+      return NextResponse.json({ error: 'Cannot lock current session user' }, { status: 403 })
+    }
+
+    if (parsedBody.data.locked && normalizeAppRole(existing.role) === 'super_admin') {
+      return NextResponse.json({ error: 'Cannot lock super admin users' }, { status: 403 })
     }
 
     const updated = await prisma.user.update({

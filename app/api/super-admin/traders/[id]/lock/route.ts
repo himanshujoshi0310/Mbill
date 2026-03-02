@@ -37,6 +37,10 @@ export async function PATCH(
       return NextResponse.json({ error: 'Trader not found' }, { status: 404 })
     }
 
+    if (parsedBody.data.locked && authResult.auth.traderId === traderId) {
+      return NextResponse.json({ error: 'Cannot lock current session trader' }, { status: 403 })
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       const trader = await tx.trader.update({
         where: { id: traderId },

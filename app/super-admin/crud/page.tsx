@@ -80,6 +80,7 @@ export default function SuperAdminCrudPage() {
   const [error, setError] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalState | null>(null)
   const [saving, setSaving] = useState(false)
+  const [lockingKey, setLockingKey] = useState<string | null>(null)
 
   const [traders, setTraders] = useState<TraderRow[]>([])
   const [companies, setCompanies] = useState<CompanyRow[]>([])
@@ -128,7 +129,7 @@ export default function SuperAdminCrudPage() {
   const kpis = useMemo(() => {
     const lockedTraders = traders.filter((row) => row.locked).length
     const lockedCompanies = companies.filter((row) => row.locked).length
-    const lockedUsers = users.filter((row) => row.locked || row.active === false).length
+    const lockedUsers = users.filter((row) => row.locked).length
     return {
       traders: traders.length,
       lockedTraders,
@@ -252,15 +253,15 @@ export default function SuperAdminCrudPage() {
       section,
       mode: 'edit',
       recordId: row.id,
-      form: {
-        traderId: row.traderId,
-        companyId: row.companyId || '',
-        userId: row.userId,
-        name: row.name || '',
-        password: '',
-        locked: row.locked || row.active === false
-      }
-    })
+        form: {
+          traderId: row.traderId,
+          companyId: row.companyId || '',
+          userId: row.userId,
+          name: row.name || '',
+          password: '',
+          locked: row.locked
+        }
+      })
   }
 
   const setModalField = (field: keyof ModalState['form'], value: string | boolean) => {
@@ -313,8 +314,12 @@ export default function SuperAdminCrudPage() {
         const traderId = form.traderId?.trim() || ''
         const companyId = form.companyId?.trim() || ''
         const userId = form.userId?.trim() || ''
+        const password = form.password?.trim() || ''
         if (!traderId || !companyId || !userId) {
           throw new Error('Trader, company and user ID are required')
+        }
+        if (password.length < 6) {
+          throw new Error('Password must be at least 6 characters')
         }
 
         url = mode === 'create' ? '/api/super-admin/users' : `/api/super-admin/users/${recordId}`
@@ -325,7 +330,7 @@ export default function SuperAdminCrudPage() {
           userId,
           name: form.name?.trim() || null,
           locked: form.locked === true,
-          ...(form.password?.trim() ? { password: form.password.trim() } : {})
+          password
         }
       }
 
@@ -375,26 +380,12 @@ export default function SuperAdminCrudPage() {
     }
   }
 
-  const applyOptimisticLock = (section: CrudSection, id: string, locked: boolean) => {
-    if (section === 'traders') {
-      setTraders((prev) => prev.map((row) => (row.id === id ? { ...row, locked } : row)))
-      setCompanies((prev) => prev.map((row) => (row.traderId === id ? { ...row, locked } : row)))
-      setUsers((prev) => prev.map((row) => (row.traderId === id ? { ...row, locked, active: !locked } : row)))
-      return
-    }
-
-    if (section === 'companies') {
-      setCompanies((prev) => prev.map((row) => (row.id === id ? { ...row, locked } : row)))
-      setUsers((prev) => prev.map((row) => (row.companyId === id ? { ...row, locked, active: !locked } : row)))
-      return
-    }
-
-    setUsers((prev) => prev.map((row) => (row.id === id ? { ...row, locked, active: !locked } : row)))
-  }
-
   const toggleLock = async (section: CrudSection, id: string, currentlyLocked: boolean) => {
+    const key = `${section}:${id}`
+    if (lockingKey === key) return
+
     const nextLocked = !currentlyLocked
-    applyOptimisticLock(section, id, nextLocked)
+    setLockingKey(key)
 
     try {
       const endpoint =
@@ -415,12 +406,11 @@ export default function SuperAdminCrudPage() {
         throw new Error(payload.error || 'Failed to update status')
       }
 
-      if (section !== 'users') {
-        await fetchData()
-      }
+      await fetchData()
     } catch (err) {
-      applyOptimisticLock(section, id, currentlyLocked)
       setError(err instanceof Error ? err.message : 'Failed to update status')
+    } finally {
+      setLockingKey(null)
     }
   }
 
@@ -535,6 +525,7 @@ export default function SuperAdminCrudPage() {
                             variant="outline"
                             className="gap-1"
                             onClick={() => toggleLock('traders', row.id, row.locked)}
+                            disabled={lockingKey === `traders:${row.id}`}
                           >
                             {row.locked ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                             {row.locked ? 'Unlock' : 'Lock'}
@@ -587,6 +578,7 @@ export default function SuperAdminCrudPage() {
                             variant="outline"
                             className="gap-1"
                             onClick={() => toggleLock('companies', row.id, row.locked)}
+                            disabled={lockingKey === `companies:${row.id}`}
                           >
                             {row.locked ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                             {row.locked ? 'Unlock' : 'Lock'}
@@ -625,7 +617,7 @@ export default function SuperAdminCrudPage() {
                 </TableHeader>
                 <TableBody>
                   {filteredUsers.map((row) => {
-                    const locked = row.locked || row.active === false
+                    const locked = row.locked
                     return (
                       <TableRow key={row.id}>
                         <TableCell className="font-medium">{row.userId}</TableCell>
@@ -655,6 +647,7 @@ export default function SuperAdminCrudPage() {
                               variant="outline"
                               className="gap-1"
                               onClick={() => toggleLock('users', row.id, locked)}
+                              disabled={lockingKey === `users:${row.id}`}
                             >
                               {locked ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                               {locked ? 'Unlock' : 'Lock'}
@@ -808,7 +801,7 @@ export default function SuperAdminCrudPage() {
                     <Input value={modal.form.name || ''} onChange={(e) => setModalField('name', e.target.value)} />
                   </div>
                   <div>
-                    <Label>{modal.mode === 'create' ? 'Password' : 'New Password (optional)'}</Label>
+                    <Label>Password</Label>
                     <Input
                       type="password"
                       value={modal.form.password || ''}

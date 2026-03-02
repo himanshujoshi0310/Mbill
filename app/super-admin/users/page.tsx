@@ -74,7 +74,7 @@ export default function SuperAdminUsersPage() {
       setError('Trader, Company and User ID are required')
       return
     }
-    if (!editingId && form.password.length < 6) {
+    if (form.password.length < 6) {
       setError('Password must be at least 6 characters')
       return
     }
@@ -88,7 +88,7 @@ export default function SuperAdminUsersPage() {
           companyId: form.companyId || undefined,
           userId: form.userId.trim(),
           name: form.name.trim() || undefined,
-          ...(form.password ? { password: form.password } : {})
+          password: form.password
         })
       })
       if (!res.ok) {
@@ -179,7 +179,7 @@ export default function SuperAdminUsersPage() {
             <Input value="company_user (auto)" disabled />
           </div>
           <div className="md:col-span-2">
-            <Label>{editingId ? 'New Password (optional)' : 'Password'}</Label>
+            <Label>Password</Label>
             <Input type="password" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
           </div>
           <div className="md:col-span-2 flex justify-end gap-2">

@@ -187,6 +187,10 @@ export async function PUT(
       return NextResponse.json({ error: 'Company not found' }, { status: 404 })
     }
 
+    if (normalized.locked === true && authResult.auth.companyId === companyId) {
+      return NextResponse.json({ error: 'Cannot lock current session company' }, { status: 403 })
+    }
+
     if (normalized.traderId !== undefined && normalized.traderId !== null) {
       const trader = await prisma.trader.findFirst({
         where: {
