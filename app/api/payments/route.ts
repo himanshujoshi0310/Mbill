@@ -10,6 +10,7 @@ import {
   filterCompanyIdsByRoutePermission
 } from '@/lib/api-security'
 import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
+import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 const paymentCreateSchema = z
   .object({
@@ -18,7 +19,8 @@ const paymentCreateSchema = z
     billId: z.string().trim().min(1, 'Bill ID is required'),
     payDate: z.string().trim().min(1, 'Pay date is required'),
     amount: z.coerce.number().positive('Amount must be greater than zero'),
-    mode: z.enum(['cash', 'online', 'bank']),
+    mode: z.string().trim().min(1, 'Payment mode is required'),
+    bankId: z.string().trim().optional().nullable(),
     txnRef: z.string().trim().max(100).optional().nullable(),
     note: z.string().trim().max(400).optional().nullable(),
     status: z.enum(['pending', 'paid']).optional()
@@ -26,7 +28,7 @@ const paymentCreateSchema = z
   .strict()
 
 export async function POST(request: NextRequest) {
-  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin'])
+  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin', 'company_user'])
   if (!authResult.ok) return authResult.response
 
   try {
@@ -72,8 +74,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Bill not found' }, { status: 404 })
     }
 
-    const paidAmount = data.billType === 'purchase' ? (bill as any).paidAmount : (bill as any).receivedAmount
-    const outstanding = Math.max(0, (bill as any).totalAmount - paidAmount)
+    const totalAmount = bill.totalAmount
+    const paidAmount =
+      data.billType === 'purchase'
+        ? 'paidAmount' in bill
+          ? bill.paidAmount
+          : 0
+        : 'receivedAmount' in bill
+          ? bill.receivedAmount
+          : 0
+    const outstanding = Math.max(0, totalAmount - paidAmount)
 
     if (data.amount > outstanding) {
       return NextResponse.json({ error: 'Payment amount cannot exceed pending balance' }, { status: 400 })
@@ -94,14 +104,14 @@ export async function POST(request: NextRequest) {
           status: paymentStatus,
           txnRef: normalizeOptionalString(data.txnRef),
           note: normalizeOptionalString(data.note),
-          partyId: data.billType === 'sales' ? (bill as any).partyId || null : null,
-          farmerId: data.billType === 'purchase' ? (bill as any).farmerId || null : null
+          partyId: data.billType === 'sales' && 'partyId' in bill ? bill.partyId || null : null,
+          farmerId: data.billType === 'purchase' && 'farmerId' in bill ? bill.farmerId || null : null
         }
       })
 
       const newPaid = paidAmount + data.amount
-      const newBalance = Math.max(0, (bill as any).totalAmount - newPaid)
-      const billStatus = newBalance === 0 ? 'paid' : newBalance === (bill as any).totalAmount ? 'unpaid' : 'partial'
+      const newBalance = Math.max(0, totalAmount - newPaid)
+      const billStatus = newBalance === 0 ? 'paid' : newBalance === totalAmount ? 'unpaid' : 'partial'
 
       if (data.billType === 'purchase') {
         await tx.purchaseBill.update({
@@ -157,6 +167,7 @@ export async function GET(request: NextRequest) {
     const searchParams = new URL(request.url).searchParams
     const requestedCompanyId = searchParams.get('companyId')?.trim() || null
     const billType = searchParams.get('billType')
+    const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
     const includeDeleted =
       authResult.auth.role === 'super_admin' && parseBooleanParam(searchParams.get('includeDeleted'))
 
@@ -173,21 +184,44 @@ export async function GET(request: NextRequest) {
     }
 
     if (permissionScopedIds.length === 0) {
+      if (pagination.enabled) {
+        return NextResponse.json({
+          data: [],
+          meta: buildPaginationMeta(0, pagination)
+        })
+      }
       return NextResponse.json([])
     }
 
-    const payments = await prisma.payment.findMany({
-      where: {
-        companyId: { in: permissionScopedIds },
-        ...(billType === 'purchase' || billType === 'sales' ? { billType } : {}),
-        ...(includeDeleted ? {} : { deletedAt: null })
-      },
-      include: {
-        party: true,
-        farmer: true
-      },
-      orderBy: { createdAt: 'desc' }
-    })
+    const where = {
+      companyId: { in: permissionScopedIds },
+      ...(billType === 'purchase' || billType === 'sales' ? { billType } : {}),
+      ...(includeDeleted ? {} : { deletedAt: null }),
+      ...(pagination.search
+        ? {
+            OR: [
+              { txnRef: { contains: pagination.search } },
+              { note: { contains: pagination.search } },
+              { mode: { contains: pagination.search } },
+              { status: { contains: pagination.search } },
+              { billType: { contains: pagination.search } }
+            ]
+          }
+        : {})
+    }
+
+    const [payments, total] = await Promise.all([
+      prisma.payment.findMany({
+        where,
+        include: {
+          party: true,
+          farmer: true
+        },
+        orderBy: { createdAt: 'desc' },
+        ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
+      }),
+      pagination.enabled ? prisma.payment.count({ where }) : Promise.resolve(0)
+    ])
 
     const purchaseBillIds = payments
       .filter((payment) => payment.billType === 'purchase')
@@ -222,6 +256,13 @@ export async function GET(request: NextRequest) {
           : salesBillMap.get(payment.billId) || '',
       partyName: payment.party?.name || payment.farmer?.name || ''
     }))
+
+    if (pagination.enabled) {
+      return NextResponse.json({
+        data: enhancedPayments,
+        meta: buildPaginationMeta(total, pagination)
+      })
+    }
 
     return NextResponse.json(enhancedPayments)
   } catch {

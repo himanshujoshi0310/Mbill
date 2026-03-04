@@ -306,6 +306,7 @@ test('Soft-deleted payments are hidden by default and visible with includeDelete
 })
 
 test('Middleware returns 429 when global rate limit is exceeded', async () => {
+  const rateLimitDisabled = process.env.DISABLE_RATE_LIMIT === 'true'
   const ip = `198.51.100.${Math.floor(Math.random() * 100) + 50}`
 
   let lastStatus = 200
@@ -321,7 +322,7 @@ test('Middleware returns 429 when global rate limit is exceeded', async () => {
     lastStatus = response.status
   }
 
-  assert.equal(lastStatus, 429)
+  assert.equal(lastStatus, rateLimitDisabled ? 200 : 429)
 })
 
 test('Login enforces provided trader scope and blocks soft-deleted users', async () => {

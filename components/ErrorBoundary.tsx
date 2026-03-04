@@ -2,6 +2,7 @@
 
 import React from 'react'
 import { Button } from '@/components/ui/button'
+import { isAbortError } from '@/lib/http'
 
 interface ErrorBoundaryProps {
   children: React.ReactNode
@@ -20,10 +21,14 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    if (isAbortError(error)) {
+      return { hasError: false, error: null }
+    }
     return { hasError: true, error }
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    if (isAbortError(error)) return
     console.error('ErrorBoundary caught an error:', error, errorInfo)
     
     // You can log the error to an error reporting service here

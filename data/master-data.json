@@ -29,5 +29,16 @@
       "updatedAt": "2026-02-27T04:25:10.204Z"
     }
   ],
-  "paymentModes": []
+  "paymentModes": [
+    {
+      "id": "d8d6fb78-d18c-498e-a7be-b995cb6618d8",
+      "companyId": "cmm997iel00026l9r1uajahfk",
+      "name": "admin",
+      "code": "C",
+      "description": "none",
+      "isActive": true,
+      "createdAt": "2026-03-03T05:25:49.497Z",
+      "updatedAt": "2026-03-03T05:25:49.497Z"
+    }
+  ]
 }

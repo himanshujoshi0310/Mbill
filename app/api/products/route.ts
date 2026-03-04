@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
+import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 interface LedgerRow {
   qtyIn: number
@@ -44,7 +45,8 @@ const putSchema = z.object({
 
 export async function GET(request: NextRequest) {
   try {
-    const companyId = normalizeCompanyId(new URL(request.url).searchParams.get('companyId'))
+    const searchParams = new URL(request.url).searchParams
+    const companyId = normalizeCompanyId(searchParams.get('companyId'))
     if (!companyId) {
       return NextResponse.json({ error: 'Company ID required' }, { status: 400 })
     }
@@ -52,14 +54,32 @@ export async function GET(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    const products = await prisma.product.findMany({
-      where: { companyId },
-      include: {
-        unit: true,
-        stockLedger: { select: { qtyIn: true, qtyOut: true } }
-      },
-      orderBy: { name: 'asc' }
-    })
+    const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
+    const where = {
+      companyId,
+      ...(pagination.search
+        ? {
+            OR: [
+              { name: { contains: pagination.search } },
+              { hsnCode: { contains: pagination.search } },
+              { description: { contains: pagination.search } }
+            ]
+          }
+        : {})
+    }
+
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        include: {
+          unit: true,
+          stockLedger: { select: { qtyIn: true, qtyOut: true } }
+        },
+        orderBy: { name: 'asc' },
+        ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
+      }),
+      pagination.enabled ? prisma.product.count({ where }) : Promise.resolve(0)
+    ])
 
     const rows = products.map((product) => {
       const totalIn = product.stockLedger.reduce((sum: number, ledger: LedgerRow) => sum + ledger.qtyIn, 0)
@@ -78,6 +98,13 @@ export async function GET(request: NextRequest) {
         updatedAt: product.updatedAt
       }
     })
+
+    if (pagination.enabled) {
+      return NextResponse.json({
+        data: rows,
+        meta: buildPaginationMeta(total, pagination)
+      })
+    }
 
     return NextResponse.json(rows)
   } catch (error) {

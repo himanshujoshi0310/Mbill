@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
 import { cleanString, normalizeTenDigitPhone } from '@/lib/field-validation'
+import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 const DUMMY_PARTIES = [
   {
@@ -89,10 +90,38 @@ export async function GET(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    const parties = await prisma.party.findMany({
-      where: { companyId },
-      orderBy: { name: 'asc' },
-    })
+    const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
+    const where = {
+      companyId,
+      ...(pagination.search
+        ? {
+            OR: [
+              { name: { contains: pagination.search } },
+              { type: { contains: pagination.search } },
+              { phone1: { contains: pagination.search } },
+              { phone2: { contains: pagination.search } },
+              { bankName: { contains: pagination.search } },
+              { address: { contains: pagination.search } }
+            ]
+          }
+        : {})
+    }
+
+    const [parties, total] = await Promise.all([
+      prisma.party.findMany({
+        where,
+        orderBy: { name: 'asc' },
+        ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
+      }),
+      pagination.enabled ? prisma.party.count({ where }) : Promise.resolve(0)
+    ])
+
+    if (pagination.enabled) {
+      return NextResponse.json({
+        data: parties,
+        meta: buildPaginationMeta(total, pagination)
+      })
+    }
 
     return NextResponse.json(parties)
   } catch (error) {

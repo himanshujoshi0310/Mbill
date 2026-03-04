@@ -3,9 +3,6 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
 
-let salesItemsStore: any[] = []
-let nextId = 1
-
 const postSchema = z.object({
   companyId: z.string().trim().min(1),
   productId: z.string().trim().min(1),
@@ -39,30 +36,15 @@ export async function GET(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    const products = await prisma.product.findMany({
+    const salesItemMasters = await prisma.salesItemMaster.findMany({
       where: { companyId },
-      include: { unit: true },
-      orderBy: { name: 'asc' },
+      include: {
+        product: {
+          include: { unit: true }
+        }
+      },
+      orderBy: { salesItemName: 'asc' }
     })
-
-    const companySalesItems = salesItemsStore.filter(item => item.companyId === companyId)
-
-    const salesItemMasters = companySalesItems.map(salesItem => {
-      const product = products.find(p => p.id === salesItem.productId)
-      return {
-        id: salesItem.id,
-        productId: salesItem.productId,
-        salesItemName: salesItem.salesItemName,
-        product: product || null,
-        hsnCode: salesItem.hsnCode,
-        gstRate: salesItem.gstRate,
-        sellingPrice: salesItem.sellingPrice,
-        description: salesItem.description,
-        isActive: salesItem.isActive,
-        createdAt: salesItem.createdAt,
-        updatedAt: salesItem.updatedAt,
-      }
-    }).filter(item => item.product !== null)
 
     return NextResponse.json(salesItemMasters)
   } catch (error) {
@@ -79,38 +61,45 @@ export async function POST(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, parsed.data.companyId)
     if (denied) return denied
 
-    const now = new Date()
-    const newSalesItem = {
-      id: `temp_${nextId++}`,
-      companyId: parsed.data.companyId,
-      productId: parsed.data.productId,
-      salesItemName: parsed.data.salesItemName.trim(),
-      hsnCode: parsed.data.hsnCode || null,
-      gstRate: parsed.data.gstRate ? parseFloat(String(parsed.data.gstRate)) : null,
-      sellingPrice: parsed.data.sellingPrice ? parseFloat(String(parsed.data.sellingPrice)) : null,
-      description: parsed.data.description || null,
-      isActive: parsed.data.isActive !== false,
-      createdAt: now,
-      updatedAt: now,
-    }
-
-    salesItemsStore.push(newSalesItem)
-
     const product = await prisma.product.findFirst({
       where: { id: parsed.data.productId, companyId: parsed.data.companyId },
       include: { unit: true }
     })
 
     if (!product) {
-      return NextResponse.json({ error: 'Product not found' }, { status: 404 })
+      return NextResponse.json({ error: 'Product not found in this company' }, { status: 404 })
     }
 
-    const salesItemMaster = {
-      ...newSalesItem,
-      product: product,
+    const existing = await prisma.salesItemMaster.findFirst({
+      where: {
+        companyId: parsed.data.companyId,
+        productId: parsed.data.productId
+      }
+    })
+
+    if (existing) {
+      return NextResponse.json({ error: 'Sales item already exists for this product' }, { status: 400 })
     }
 
-    return NextResponse.json(salesItemMaster)
+    const created = await prisma.salesItemMaster.create({
+      data: {
+        companyId: parsed.data.companyId,
+        productId: parsed.data.productId,
+        salesItemName: parsed.data.salesItemName.trim(),
+        hsnCode: parsed.data.hsnCode || null,
+        gstRate: parsed.data.gstRate !== undefined && parsed.data.gstRate !== null ? parseFloat(String(parsed.data.gstRate)) : null,
+        sellingPrice: parsed.data.sellingPrice !== undefined && parsed.data.sellingPrice !== null ? parseFloat(String(parsed.data.sellingPrice)) : null,
+        description: parsed.data.description || null,
+        isActive: parsed.data.isActive !== false
+      },
+      include: {
+        product: {
+          include: { unit: true }
+        }
+      }
+    })
+
+    return NextResponse.json(created)
   } catch (error) {
     console.error('Error creating sales item master:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -133,41 +122,58 @@ export async function PUT(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    const itemIndex = salesItemsStore.findIndex(item => item.id === id && item.companyId === companyId)
+    const existing = await prisma.salesItemMaster.findFirst({
+      where: { id, companyId }
+    })
 
-    if (itemIndex === -1) {
+    if (!existing) {
       return NextResponse.json({ error: 'Sales Item Master not found' }, { status: 404 })
     }
 
-    const updatedItem = {
-      ...salesItemsStore[itemIndex],
-      productId: parsed.data.productId !== undefined ? parsed.data.productId : salesItemsStore[itemIndex].productId,
-      salesItemName: parsed.data.salesItemName !== undefined ? parsed.data.salesItemName.trim() : salesItemsStore[itemIndex].salesItemName,
-      hsnCode: parsed.data.hsnCode !== undefined ? parsed.data.hsnCode : salesItemsStore[itemIndex].hsnCode,
-      gstRate: parsed.data.gstRate !== undefined ? (parsed.data.gstRate ? parseFloat(String(parsed.data.gstRate)) : null) : salesItemsStore[itemIndex].gstRate,
-      sellingPrice: parsed.data.sellingPrice !== undefined ? (parsed.data.sellingPrice ? parseFloat(String(parsed.data.sellingPrice)) : null) : salesItemsStore[itemIndex].sellingPrice,
-      description: parsed.data.description !== undefined ? parsed.data.description : salesItemsStore[itemIndex].description,
-      isActive: parsed.data.isActive !== undefined ? parsed.data.isActive : salesItemsStore[itemIndex].isActive,
-      updatedAt: new Date(),
+    const nextProductId = parsed.data.productId ?? existing.productId
+    if (nextProductId !== existing.productId) {
+      const product = await prisma.product.findFirst({
+        where: { id: nextProductId, companyId }
+      })
+      if (!product) {
+        return NextResponse.json({ error: 'Product not found in this company' }, { status: 404 })
+      }
+
+      const duplicate = await prisma.salesItemMaster.findFirst({
+        where: {
+          companyId,
+          productId: nextProductId,
+          id: { not: id }
+        }
+      })
+      if (duplicate) {
+        return NextResponse.json({ error: 'Sales item already exists for this product' }, { status: 400 })
+      }
     }
 
-    salesItemsStore[itemIndex] = updatedItem
-
-    const product = await prisma.product.findFirst({
-      where: { id: updatedItem.productId, companyId },
-      include: { unit: true }
+    const updated = await prisma.salesItemMaster.update({
+      where: { id },
+      data: {
+        productId: parsed.data.productId ?? existing.productId,
+        salesItemName: parsed.data.salesItemName !== undefined ? parsed.data.salesItemName.trim() : existing.salesItemName,
+        hsnCode: parsed.data.hsnCode !== undefined ? parsed.data.hsnCode : existing.hsnCode,
+        gstRate: parsed.data.gstRate !== undefined
+          ? (parsed.data.gstRate === null ? null : parseFloat(String(parsed.data.gstRate)))
+          : existing.gstRate,
+        sellingPrice: parsed.data.sellingPrice !== undefined
+          ? (parsed.data.sellingPrice === null ? null : parseFloat(String(parsed.data.sellingPrice)))
+          : existing.sellingPrice,
+        description: parsed.data.description !== undefined ? parsed.data.description : existing.description,
+        isActive: parsed.data.isActive ?? existing.isActive
+      },
+      include: {
+        product: {
+          include: { unit: true }
+        }
+      }
     })
 
-    if (!product) {
-      return NextResponse.json({ error: 'Product not found' }, { status: 404 })
-    }
-
-    const salesItemMaster = {
-      ...updatedItem,
-      product: product,
-    }
-
-    return NextResponse.json(salesItemMaster)
+    return NextResponse.json(updated)
   } catch (error) {
     console.error('Error updating sales item master:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -187,12 +193,17 @@ export async function DELETE(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    const initialLength = salesItemsStore.length
-    salesItemsStore = salesItemsStore.filter(item => !(item.id === id && item.companyId === companyId))
+    const existing = await prisma.salesItemMaster.findFirst({
+      where: { id, companyId }
+    })
 
-    if (salesItemsStore.length === initialLength) {
+    if (!existing) {
       return NextResponse.json({ error: 'Sales Item Master not found' }, { status: 404 })
     }
+
+    await prisma.salesItemMaster.delete({
+      where: { id }
+    })
 
     return NextResponse.json({ success: true, message: 'Sales Item Master deleted successfully' })
   } catch (error) {

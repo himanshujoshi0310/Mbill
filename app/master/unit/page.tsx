@@ -201,19 +201,6 @@ export default function UnitMasterPage() {
     if (response.ok) fetchUnits()
   }
 
-  const handleAddDummyData = async () => {
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
-    const response = await fetch(`/api/units?companyId=${companyId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seed: true })
-    })
-    const result = await response.json()
-    alert(result.message || result.error || 'Operation completed')
-    if (response.ok) fetchUnits()
-  }
-
   const handleExportCsv = () => {
     if (units.length === 0) return alert('No unit data to export')
     const headers = ['Name', 'Symbol', 'KGEquivalent', 'Universal', 'Description', 'CreatedAt']
@@ -256,7 +243,6 @@ export default function UnitMasterPage() {
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
-              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
               <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
               <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
                 <Plus className="h-4 w-4" />

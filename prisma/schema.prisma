@@ -392,6 +392,8 @@ model Transport {
   vehicleNumber   String?
   driverName      String?
   driverPhone     String?
+  vehicleType     String?
+  description     String?
   capacity        Float?
   freightRate     Float?
   isActive        Boolean  @default(true)

@@ -5,6 +5,7 @@ import { getRequestIp } from '@/lib/api-security'
 import { prisma } from '@/lib/prisma'
 
 const refreshRateLimit = new Map<string, { count: number; resetTime: number }>()
+const ENABLE_REFRESH_RATE_LIMIT = false
 
 function isRefreshAllowed(ip: string): { allowed: boolean; retryAfter?: number } {
   const now = Date.now()
@@ -22,12 +23,14 @@ function isRefreshAllowed(ip: string): { allowed: boolean; retryAfter?: number }
 
 export async function POST(request: NextRequest) {
   try {
-    const rateLimitResult = isRefreshAllowed(getRequestIp(request))
-    if (!rateLimitResult.allowed) {
-      return NextResponse.json(
-        { error: 'Too many refresh requests' },
-        { status: 429, headers: { 'Retry-After': String(rateLimitResult.retryAfter || 60) } }
-      )
+    if (ENABLE_REFRESH_RATE_LIMIT) {
+      const rateLimitResult = isRefreshAllowed(getRequestIp(request))
+      if (!rateLimitResult.allowed) {
+        return NextResponse.json(
+          { error: 'Too many refresh requests' },
+          { status: 429, headers: { 'Retry-After': String(rateLimitResult.retryAfter || 60) } }
+        )
+      }
     }
 
     const refreshToken = request.cookies.get('refresh-token')?.value

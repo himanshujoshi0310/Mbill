@@ -164,19 +164,6 @@ export default function BankMasterPage() {
     if (response.ok) fetchBanks()
   }
 
-  const handleAddDummyData = async () => {
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
-    const response = await fetch(`/api/banks?companyId=${companyId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seed: true })
-    })
-    const result = await response.json()
-    alert(result.message || result.error || 'Operation completed')
-    if (response.ok) fetchBanks()
-  }
-
   const handleExportCsv = () => {
     if (banks.length === 0) return alert('No bank data to export')
     const headers = ['Name', 'Branch', 'IFSC', 'Account', 'Address', 'Phone', 'Status', 'CreatedAt']

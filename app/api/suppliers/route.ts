@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
 import { cleanString, normalizeTenDigitPhone } from '@/lib/field-validation'
+import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 function normalizeCompanyId(raw: string | null): string | null {
   if (!raw) return null
@@ -70,21 +71,49 @@ export async function GET(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    const suppliers = await prisma.supplier.findMany({
-      where: { companyId },
-      select: {
-        id: true,
-        name: true,
-        address: true,
-        phone1: true,
-        phone2: true,
-        ifscCode: true,
-        bankName: true,
-        accountNo: true,
-        gstNumber: true,
-      },
-      orderBy: { name: 'asc' },
-    })
+    const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
+    const where = {
+      companyId,
+      ...(pagination.search
+        ? {
+            OR: [
+              { name: { contains: pagination.search } },
+              { phone1: { contains: pagination.search } },
+              { phone2: { contains: pagination.search } },
+              { gstNumber: { contains: pagination.search } },
+              { bankName: { contains: pagination.search } },
+              { address: { contains: pagination.search } }
+            ]
+          }
+        : {})
+    }
+
+    const [suppliers, total] = await Promise.all([
+      prisma.supplier.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          address: true,
+          phone1: true,
+          phone2: true,
+          ifscCode: true,
+          bankName: true,
+          accountNo: true,
+          gstNumber: true,
+        },
+        orderBy: { name: 'asc' },
+        ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
+      }),
+      pagination.enabled ? prisma.supplier.count({ where }) : Promise.resolve(0)
+    ])
+
+    if (pagination.enabled) {
+      return NextResponse.json({
+        data: suppliers,
+        meta: buildPaginationMeta(total, pagination)
+      })
+    }
 
     return NextResponse.json(suppliers)
   } catch (error) {

@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,6 +10,11 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Plus, Edit, Trash2, Package } from 'lucide-react'
+import {
+  clearDefaultPurchaseProductId,
+  getDefaultPurchaseProductId,
+  setDefaultPurchaseProductId
+} from '@/lib/default-product'
 
 interface Product {
   id: string
@@ -34,13 +38,12 @@ interface Unit {
 }
 
 export default function ProductMasterPage() {
-  const router = useRouter()
   const [products, setProducts] = useState<Product[]>([])
   const [units, setUnits] = useState<Unit[]>([])
   const [loading, setLoading] = useState(true)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
-  const [searchParams, setSearchParams] = useState<URLSearchParams>()
+  const [defaultPurchaseProductId, setDefaultPurchaseProductIdState] = useState('')
 
   // Form state
   const [formData, setFormData] = useState({
@@ -50,17 +53,18 @@ export default function ProductMasterPage() {
     gstRate: '',
     sellingPrice: '',
     description: '',
-    isActive: true
+    isActive: true,
+    setAsDefaultPurchaseProduct: false
   })
 
   const gstRates = ['0', '5', '12', '18', '28']
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    setSearchParams(params)
     const companyId = params.get('companyId')
     
     if (companyId) {
+      setDefaultPurchaseProductIdState(getDefaultPurchaseProductId(companyId))
       fetchProducts()
       fetchUnits()
     }
@@ -89,7 +93,18 @@ export default function ProductMasterPage() {
       const response = await fetch(`/api/products?companyId=${companyId}`)
       if (response.ok) {
         const data = await response.json()
-        setProducts(data)
+        const rows = Array.isArray(data) ? data : []
+        setProducts(rows)
+
+        const rememberedDefault = getDefaultPurchaseProductId(companyId || '')
+        if (!rememberedDefault) {
+          setDefaultPurchaseProductIdState('')
+        } else if (rows.some((product) => product.id === rememberedDefault)) {
+          setDefaultPurchaseProductIdState(rememberedDefault)
+        } else {
+          clearDefaultPurchaseProductId(companyId || '')
+          setDefaultPurchaseProductIdState('')
+        }
       }
     } catch (error) {
       console.error('Error fetching products:', error)
@@ -115,16 +130,32 @@ export default function ProductMasterPage() {
         : `/api/products?companyId=${companyId}`
       
       const method = editingProduct ? 'PUT' : 'POST'
+      const payload = {
+        name: formData.name,
+        unit: formData.unit,
+        hsnCode: formData.hsnCode,
+        gstRate: formData.gstRate,
+        sellingPrice: formData.sellingPrice,
+        description: formData.description,
+        isActive: formData.isActive
+      }
       
       const response = await fetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       })
 
       if (response.ok) {
+        const responseData = await response.json().catch(() => ({}))
+        const savedProductId = responseData?.product?.id || editingProduct?.id || ''
+        if (companyId && formData.setAsDefaultPurchaseProduct && savedProductId) {
+          setDefaultPurchaseProductId(companyId, savedProductId)
+          setDefaultPurchaseProductIdState(savedProductId)
+        }
+
         alert(editingProduct ? 'Product updated successfully!' : 'Product created successfully!')
         resetForm()
         fetchProducts()
@@ -147,7 +178,8 @@ export default function ProductMasterPage() {
       gstRate: product.gstRate?.toString() || '',
       sellingPrice: product.sellingPrice?.toString() || '',
       description: product.description || '',
-      isActive: product.isActive
+      isActive: product.isActive,
+      setAsDefaultPurchaseProduct: defaultPurchaseProductId === product.id
     })
     setIsFormOpen(true)
   }
@@ -164,6 +196,10 @@ export default function ProductMasterPage() {
       })
 
       if (response.ok) {
+        if (companyId && defaultPurchaseProductId === id) {
+          clearDefaultPurchaseProductId(companyId)
+          setDefaultPurchaseProductIdState('')
+        }
         alert('Product deleted successfully!')
         fetchProducts()
       } else {
@@ -183,20 +219,21 @@ export default function ProductMasterPage() {
     const response = await fetch(`/api/products?companyId=${companyId}&all=true`, { method: 'DELETE' })
     const result = await response.json()
     alert(result.message || result.error || 'Operation completed')
-    if (response.ok) fetchProducts()
+    if (response.ok) {
+      clearDefaultPurchaseProductId(companyId || '')
+      setDefaultPurchaseProductIdState('')
+      fetchProducts()
+    }
   }
 
-  const handleAddDummyData = async () => {
+  const handleSetDefaultPurchaseProduct = (productId: string) => {
     const params = new URLSearchParams(window.location.search)
     const companyId = params.get('companyId')
-    const response = await fetch(`/api/products?companyId=${companyId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seed: true })
-    })
-    const result = await response.json()
-    alert(result.message || result.error || 'Operation completed')
-    if (response.ok) fetchProducts()
+    if (!companyId) return
+
+    setDefaultPurchaseProductId(companyId, productId)
+    setDefaultPurchaseProductIdState(productId)
+    alert('Default purchase product updated successfully')
   }
 
   const handleExportCsv = () => {
@@ -221,7 +258,8 @@ export default function ProductMasterPage() {
       gstRate: '', 
       sellingPrice: '', 
       description: '', 
-      isActive: true 
+      isActive: true,
+      setAsDefaultPurchaseProduct: false
     })
     setEditingProduct(null)
     setIsFormOpen(false)
@@ -249,7 +287,6 @@ export default function ProductMasterPage() {
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
-              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
               <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
               <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
                 <Plus className="h-4 w-4" />
@@ -346,6 +383,18 @@ export default function ProductMasterPage() {
                       />
                       <Label htmlFor="isActive">Active</Label>
                     </div>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="setAsDefaultPurchaseProduct"
+                        checked={formData.setAsDefaultPurchaseProduct}
+                        onChange={(e) =>
+                          setFormData({ ...formData, setAsDefaultPurchaseProduct: e.target.checked })
+                        }
+                        className="h-4 w-4"
+                      />
+                      <Label htmlFor="setAsDefaultPurchaseProduct">Set as default purchase product</Label>
+                    </div>
                   </div>
                   <div className="flex justify-end space-x-2">
                     <Button type="button" variant="outline" onClick={resetForm}>
@@ -375,6 +424,7 @@ export default function ProductMasterPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Product Name</TableHead>
+                      <TableHead>Default Purchase</TableHead>
                       <TableHead>Unit</TableHead>
                       <TableHead>Current Stock</TableHead>
                       <TableHead>HSN Code</TableHead>
@@ -389,6 +439,19 @@ export default function ProductMasterPage() {
                     {products.map((product) => (
                       <TableRow key={product.id}>
                         <TableCell className="font-medium">{product.name}</TableCell>
+                        <TableCell>
+                          {defaultPurchaseProductId === product.id ? (
+                            <Badge className="bg-green-600 hover:bg-green-600">Default</Badge>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleSetDefaultPurchaseProduct(product.id)}
+                            >
+                              Set Default
+                            </Button>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <Badge variant="outline">{product.unit.toUpperCase()}</Badge>
                         </TableCell>

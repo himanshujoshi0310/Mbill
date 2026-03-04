@@ -73,6 +73,33 @@ interface SpecialPurchaseBill {
 
 type PurchaseBill = RegularPurchaseBill | SpecialPurchaseBill
 
+function parseDateOrNull(value: string): Date | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) ? parsed : null
+}
+
+function startOfDay(value: string): Date | null {
+  const date = parseDateOrNull(value)
+  if (!date) return null
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function endOfDay(value: string): Date | null {
+  const date = parseDateOrNull(value)
+  if (!date) return null
+  date.setHours(23, 59, 59, 999)
+  return date
+}
+
+function toDateInputValue(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export default function PurchaseListPage() {
   const router = useRouter()
   const [purchaseBills, setPurchaseBills] = useState<PurchaseBill[]>([])
@@ -190,11 +217,23 @@ export default function PurchaseListPage() {
     }
 
     if (dateFrom) {
-      filtered = filtered.filter(bill => new Date(bill.billDate) >= new Date(dateFrom))
+      const fromDate = startOfDay(dateFrom)
+      if (!fromDate) return filtered
+      filtered = filtered.filter((bill) => {
+        const billDate = parseDateOrNull(bill.billDate)
+        if (!billDate) return false
+        return billDate >= fromDate
+      })
     }
 
     if (dateTo) {
-      filtered = filtered.filter(bill => new Date(bill.billDate) <= new Date(dateTo))
+      const toDate = endOfDay(dateTo)
+      if (!toDate) return filtered
+      filtered = filtered.filter((bill) => {
+        const billDate = parseDateOrNull(bill.billDate)
+        if (!billDate) return false
+        return billDate <= toDate
+      })
     }
 
     if (weight) {
@@ -245,6 +284,23 @@ export default function PurchaseListPage() {
     setRegistrationNumber('')
     setPayable('')
     setPurchaseType('all')
+  }
+
+  const handleAutoFilters = () => {
+    const today = new Date()
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+
+    let nextFrom = dateFrom || toDateInputValue(monthStart)
+    let nextTo = dateTo || toDateInputValue(today)
+
+    if (nextFrom > nextTo) {
+      const tmp = nextFrom
+      nextFrom = nextTo
+      nextTo = tmp
+    }
+
+    setDateFrom(nextFrom)
+    setDateTo(nextTo)
   }
 
   const handleView = (bill: PurchaseBill) => {
@@ -579,7 +635,7 @@ export default function PurchaseListPage() {
               </div>
             </div>
             <div className="flex gap-2 mt-4">
-              <Button disabled>Auto</Button>
+              <Button onClick={handleAutoFilters}>Auto</Button>
               <Button variant="outline" onClick={clearFilters}>Clear</Button>
               <Button variant="outline" onClick={exportToExcel}>
                 <Download className="w-4 h-4 mr-2" />

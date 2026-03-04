@@ -257,8 +257,11 @@ function PurchasePaymentEntryPageContent() {
         // Refresh bills to update balances
         await fetchPurchaseBills()
       } else {
-        const errorData = await response.json()
-        alert('Error recording payment: ' + (errorData.error || 'Unknown error'))
+        const errorData = await response.json().catch(() => ({} as { error?: string; details?: Array<{ message?: string }> }))
+        const detail = Array.isArray(errorData.details) && errorData.details.length > 0
+          ? errorData.details[0]?.message
+          : ''
+        alert('Error recording payment: ' + (detail || errorData.error || 'Unknown error'))
       }
     } catch (error) {
       console.error('Error:', error)

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
 import { ensureCompanyAccess, getRequestAuthContext, parseJsonWithSchema } from '@/lib/api-security'
 import { normalizeTenDigitPhone, parseNonNegativeNumber } from '@/lib/field-validation'
+import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 const purchaseCreateSchema = z.object({
   companyId: z.string().min(1),
@@ -213,6 +214,7 @@ export async function GET(request: NextRequest) {
     const whereClause: {
       companyId: string
       billDate?: { gte?: Date; lte?: Date }
+      OR?: Array<{ billNo: { contains: string } } | { status: { contains: string } }>
     } = { companyId }
 
     if (dateFrom || dateTo) {
@@ -221,18 +223,37 @@ export async function GET(request: NextRequest) {
       if (dateTo) whereClause.billDate.lte = new Date(dateTo)
     }
 
-    const purchaseBills = await prisma.purchaseBill.findMany({
-      where: whereClause,
-      include: {
-        farmer: true,
-        purchaseItems: {
-          include: {
-            product: true
+    const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
+    if (pagination.search) {
+      whereClause.OR = [
+        { billNo: { contains: pagination.search } },
+        { status: { contains: pagination.search } }
+      ]
+    }
+
+    const [purchaseBills, total] = await Promise.all([
+      prisma.purchaseBill.findMany({
+        where: whereClause,
+        include: {
+          farmer: true,
+          purchaseItems: {
+            include: {
+              product: true
+            }
           }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
-    })
+        },
+        orderBy: { createdAt: 'desc' },
+        ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
+      }),
+      pagination.enabled ? prisma.purchaseBill.count({ where: whereClause }) : Promise.resolve(0)
+    ])
+
+    if (pagination.enabled) {
+      return NextResponse.json({
+        data: purchaseBills,
+        meta: buildPaginationMeta(total, pagination)
+      })
+    }
 
     return NextResponse.json(purchaseBills)
   } catch {

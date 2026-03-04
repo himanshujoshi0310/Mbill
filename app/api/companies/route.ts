@@ -45,14 +45,13 @@ export async function GET(request: NextRequest) {
     } else if (auth.role === 'trader_admin') {
       where.traderId = auth.traderId
     } else {
-      if (!auth.companyId) {
-        return NextResponse.json(
-          { error: 'Company assignment required' },
-          { status: 403, headers: setCORSHeaders() }
-        )
+      // For company users/admins with missing company assignment, do not hard-fail dashboard bootstrap.
+      // Return trader-scoped companies so they can recover via company selection UI.
+      if (auth.companyId) {
+        where.id = auth.companyId
+      } else if (auth.traderId) {
+        where.traderId = auth.traderId
       }
-      where.id = auth.companyId
-      where.traderId = auth.traderId
     }
 
     const companies = await prisma.company.findMany({

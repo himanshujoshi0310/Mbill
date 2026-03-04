@@ -2,22 +2,14 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import LogoutButton from '@/components/LogoutButton'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Plus, Edit, Trash2, Search, ShoppingCart, TrendingUp, Package, CreditCard, FileText, Settings } from 'lucide-react'
+import { Plus, Trash2, Search } from 'lucide-react'
 import DashboardLayout from '@/app/components/DashboardLayout'
-
-interface Product {
-  id: string
-  name: string
-  unit?: {
-    symbol: string
-  }
-}
+import { isAbortError } from '@/lib/http'
 
 interface Party {
   id: string
@@ -38,18 +30,20 @@ interface SalesItem {
   discount: number
 }
 
+interface SalesItemMasterOption {
+  id: string
+  productId: string
+  salesItemName: string
+  product?: {
+    name?: string
+  }
+}
+
 export default function SalesEntryPage() {
   const router = useRouter()
   const itemIdSequence = useRef(0)
-  const [products, setProducts] = useState<Product[]>([])
   const [parties, setParties] = useState<Party[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState(1)
-
-  // Party search state (keep for compatibility but will be removed)
-  const [partySearchTerm, setPartySearchTerm] = useState('')
-  const [filteredParties, setFilteredParties] = useState<Party[]>([])
-  const [showPartyDropdown, setShowPartyDropdown] = useState(false)
 
   // Transport search state
   const [transportSearchTerm, setTransportSearchTerm] = useState('')
@@ -58,7 +52,7 @@ export default function SalesEntryPage() {
   const [showTransportDropdown, setShowTransportDropdown] = useState(false)
 
   // Sales Items state
-  const [salesItems, setSalesItems] = useState<any[]>([])
+  const [salesItems, setSalesItems] = useState<SalesItemMasterOption[]>([])
   const [currentFormItems, setCurrentFormItems] = useState<SalesItem[]>([])
 
   // Invoice Tab 1 - Basic Info
@@ -76,6 +70,7 @@ export default function SalesEntryPage() {
   const [freightAmount, setFreightAmount] = useState('')
   const [advance, setAdvance] = useState('')
   const [toPay, setToPay] = useState('')
+  const [advanceError, setAdvanceError] = useState('')
 
   // Invoice Tab 3 - Items
   const [currentItem, setCurrentItem] = useState({
@@ -90,6 +85,8 @@ export default function SalesEntryPage() {
   const [totalNoOfBags, setTotalNoOfBags] = useState(0)
   const [totalWeight, setTotalWeight] = useState(0)
   const [totalAmount, setTotalAmount] = useState(0)
+  const [advanceExpense, setAdvanceExpense] = useState('')
+  const [insurance, setInsurance] = useState('')
 
   const onlyDigits = (value: string, max = 10) => value.replace(/\D/g, '').slice(0, max)
   const toNonNegative = (value: string) => {
@@ -99,16 +96,64 @@ export default function SalesEntryPage() {
     return String(Math.max(0, parsed))
   }
 
+  const additionalTotal = (parseFloat(advanceExpense) || 0) + (parseFloat(insurance) || 0)
+  const grandTotal = totalAmount + additionalTotal
+
+  const parseApiJson = async <T,>(response: Response, fallback: T, context: string): Promise<T> => {
+    const raw = await response.text()
+    if (!raw) return fallback
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      console.error(`${context}: expected JSON but got non-JSON response`, {
+        status: response.status,
+        preview: raw.slice(0, 120)
+      })
+      return fallback
+    }
+  }
+
   useEffect(() => {
-    fetchData()
+    const controller = new AbortController()
+    void fetchData(controller.signal)
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {
     // Calculate to pay when freight amount or advance changes
     const freight = parseFloat(freightAmount) || 0
-    const adv = parseFloat(advance) || 0
+    let adv = parseFloat(advance) || 0
+    if (freightAmount !== '' && advance !== '' && adv > freight) {
+      setAdvance(String(freight))
+      setAdvanceError('Advance amount cannot be greater than freight amount')
+      adv = freight
+    } else {
+      setAdvanceError('')
+    }
     setToPay(Math.max(0, freight - adv).toString())
   }, [freightAmount, advance])
+
+  const handleAdvanceChange = (value: string) => {
+    const normalized = toNonNegative(value)
+    if (normalized === '') {
+      setAdvance('')
+      setAdvanceError('')
+      return
+    }
+
+    const nextAdvance = Number(normalized)
+    const maxFreight = Number(freightAmount || 0)
+    const hasFreight = freightAmount !== ''
+
+    if (hasFreight && nextAdvance > maxFreight) {
+      setAdvance(String(maxFreight))
+      setAdvanceError('Advance amount cannot be greater than freight amount')
+      return
+    }
+
+    setAdvance(normalized)
+    setAdvanceError('')
+  }
 
   // Filter transports based on search term
   useEffect(() => {
@@ -127,7 +172,6 @@ export default function SalesEntryPage() {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement
       if (!target.closest('.search-dropdown-container')) {
-        setShowPartyDropdown(false)
         setShowTransportDropdown(false)
       }
     }
@@ -144,12 +188,10 @@ export default function SalesEntryPage() {
       setPartyName(party.name) // For display only
       setPartyAddress(party.address || '')
       setPartyContact(party.phone1 || '')
-      setPartySearchTerm(party.name)
     } else {
       setPartyName('')
       setPartyAddress('')
       setPartyContact('')
-      setPartySearchTerm('')
     }
   }
 
@@ -187,7 +229,7 @@ export default function SalesEntryPage() {
       })
 
       if (response.ok) {
-        const result = await response.json()
+        const result = await parseApiJson<{ party?: Party; error?: string }>(response, {}, 'Add party API')
         const newParty = result?.party
         if (!newParty?.id) {
           alert(result?.error || 'Party created but invalid response received')
@@ -197,7 +239,7 @@ export default function SalesEntryPage() {
         setSelectedParty(newParty.id)
         alert('Party added successfully!')
       } else {
-        const error = await response.json()
+        const error = await parseApiJson<{ error?: string }>(response, {}, 'Add party API error')
         alert('Error adding party: ' + (error.error || 'Unknown error'))
       }
     } catch (error) {
@@ -224,13 +266,7 @@ export default function SalesEntryPage() {
     router.push(`/master/transport?companyId=${companyId}`)
   }
 
-  const handleAddNewSalesItem = () => {
-    const urlParams = new URLSearchParams(window.location.search)
-    const companyId = urlParams.get('companyId')
-    router.push(`/master/sales-item?companyId=${companyId}`)
-  }
-
-  const fetchData = async () => {
+  const fetchData = async (signal?: AbortSignal) => {
     try {
       const urlParams = new URLSearchParams(window.location.search)
       const companyId = urlParams.get('companyId')
@@ -241,35 +277,48 @@ export default function SalesEntryPage() {
         return
       }
 
-      // Fetch products, parties, transports, and sales items
-      const [productsRes, partiesRes, transportsRes, salesItemsRes] = await Promise.all([
-        fetch(`/api/products?companyId=${companyId}`),
-        fetch(`/api/parties?companyId=${companyId}`),
-        fetch(`/api/transports?companyId=${companyId}`),
-        fetch(`/api/sales-item-masters?companyId=${companyId}`)
+      // Fetch parties, transports, and sales items
+      const [partiesRes, transportsRes, salesItemsRes] = await Promise.all([
+        fetch(`/api/parties?companyId=${companyId}`, { signal }),
+        fetch(`/api/transports?companyId=${companyId}`, { signal }),
+        fetch(`/api/sales-item-masters?companyId=${companyId}`, { signal })
       ])
 
-      const productsData = await productsRes.json()
-      const partiesData = await partiesRes.json()
-      const transportsData = await transportsRes.json()
-      const salesItemsData = await salesItemsRes.json()
+      if (signal?.aborted) return
 
-      setProducts(productsData)
-      setParties(partiesData)
-      setFilteredParties(partiesData) // Initialize filtered parties
-      setTransports(transportsData)
-      setFilteredTransports(transportsData)
-      setSalesItems(salesItemsData)
+      if ([partiesRes, transportsRes, salesItemsRes].some((res) => res.status === 401 || res.status === 403)) {
+        alert('Session expired. Please login again.')
+        router.push('/login')
+        return
+      }
+
+      const [partiesData, transportsData, salesItemsData] = await Promise.all([
+        parseApiJson<any[]>(partiesRes, [], 'Parties API'),
+        parseApiJson<any[]>(transportsRes, [], 'Transports API'),
+        parseApiJson<any[]>(salesItemsRes, [], 'Sales item masters API')
+      ])
+
+      setParties(Array.isArray(partiesData) ? partiesData : [])
+      setTransports(Array.isArray(transportsData) ? transportsData : [])
+      setFilteredTransports(Array.isArray(transportsData) ? transportsData : [])
+      setSalesItems(Array.isArray(salesItemsData) ? salesItemsData : [])
 
       // Generate next invoice number
-      const billsRes = await fetch(`/api/sales-bills?companyId=${companyId}&last=true`)
-      const billsData = await billsRes.json()
+      const billsRes = await fetch(`/api/sales-bills?companyId=${companyId}&last=true`, { signal })
+      if (signal?.aborted) return
+      if (!billsRes.ok) {
+        setInvoiceNo('1')
+        setLoading(false)
+        return
+      }
+      const billsData = await parseApiJson<{ lastBillNumber?: number }>(billsRes, { lastBillNumber: 0 }, 'Sales bills API')
       const lastBillNum = Number(billsData.lastBillNumber || 0)
-      const nextInvoiceNumber = lastBillNum === 0 ? 1 : lastBillNum + 1
+      const nextInvoiceNumber = lastBillNum <= 0 ? 1 : lastBillNum + 1
       setInvoiceNo(nextInvoiceNumber.toString())
       
       setLoading(false)
     } catch (error) {
+      if (isAbortError(error)) return
       console.error('Error fetching data:', error)
       setLoading(false)
     }
@@ -294,7 +343,12 @@ export default function SalesEntryPage() {
       return
     }
 
-    const salesItem = salesItems.find(s => s.id === currentItem.salesItemId)
+    if (salesItems.length === 0) {
+      alert('No Sales Item Master found. Please add sales items in Master > Sales Item.')
+      return
+    }
+
+    const salesItem = salesItems.find((s) => s.id === currentItem.salesItemId)
     const { totalWeight, amount } = calculateItemTotals()
     const bags = parseFloat(currentItem.noOfBags) || 0
     const rate = parseFloat(currentItem.rate) || 0
@@ -305,7 +359,7 @@ export default function SalesEntryPage() {
 
     const newItem: SalesItem = {
       id: `item-${++itemIdSequence.current}`,
-      productId: salesItem?.productId || currentItem.salesItemId, // Use the actual productId from sales item
+      productId: salesItem?.productId || '',
       weight: totalWeight || 0,
       bags,
       rate,
@@ -313,8 +367,7 @@ export default function SalesEntryPage() {
       discount: 0 // Default discount to 0
     }
 
-    // Validate that we have a real product ID (not temp)
-    if (newItem.productId.startsWith('temp_')) {
+    if (!newItem.productId) {
       alert('Invalid product selection. Please select a valid sales item from the dropdown.')
       return
     }
@@ -341,13 +394,6 @@ export default function SalesEntryPage() {
     setTotalNoOfBags(totalBags)
     setTotalWeight(totalWeight)
     setTotalAmount(totalAmt)
-  }
-
-  const handleUpdateItem = (id: string) => {
-    // For now, just remove and re-add
-    const updatedItems = currentFormItems.filter(item => item.id !== id)
-    setCurrentFormItems(updatedItems)
-    updateTotals(updatedItems)
   }
 
   const handleRemoveItem = (id: string) => {
@@ -395,6 +441,13 @@ export default function SalesEntryPage() {
         return
       }
     }
+
+    const freight = parseFloat(freightAmount) || 0
+    const adv = parseFloat(advance) || 0
+    if (adv > freight) {
+      setAdvanceError('Advance amount cannot be greater than freight amount')
+      return
+    }
     
     try {
       const urlParams = new URLSearchParams(window.location.search)
@@ -415,15 +468,17 @@ export default function SalesEntryPage() {
         amount: item.amount
       }))
 
+      const finalTotalAmount = Math.max(0, grandTotal)
+
       // Sales Bill data (core fields only)
       const salesBillData = {
         companyId: firmId,
         billNo: invoiceNo,
         billDate: invoiceDate, // Fixed: use billDate instead of invoiceDate
         partyId: selectedParty,
-        totalAmount,
+        totalAmount: finalTotalAmount,
         receivedAmount: 0, // Default to 0, can be updated later
-        balanceAmount: totalAmount, // Initially full amount is balance
+        balanceAmount: finalTotalAmount, // Initially full amount is balance
         status: 'unpaid' // Default status
       }
 
@@ -492,7 +547,6 @@ export default function SalesEntryPage() {
 
   return (
     <DashboardLayout companyId={companyId}>
-      <LogoutButton />
       <div className="p-6">
         <div className="max-w-6xl mx-auto">
           <Card>
@@ -510,7 +564,7 @@ export default function SalesEntryPage() {
                         <Label htmlFor="invoiceNo">Invoice No. (Auto-generated)</Label>
                         <Input 
                           id="invoiceNo" 
-                          value={invoiceNo ? `SAL-${new Date().getFullYear()}-${invoiceNo.padStart(3, '0')}` : 'Loading...'} 
+                          value={invoiceNo || 'Loading...'} 
                           readOnly 
                           className="bg-gray-100 font-semibold" 
                         />
@@ -518,7 +572,7 @@ export default function SalesEntryPage() {
                           <p className="text-xs text-gray-500 mt-1">
                             {parseInt(invoiceNo) === 1 
                               ? `First invoice for this company` 
-                              : `Next invoice: SAL-${new Date().getFullYear()}-${invoiceNo.padStart(3, '0')}`
+                              : `Next invoice: ${invoiceNo}`
                             }
                           </p>
                         )}
@@ -648,7 +702,7 @@ export default function SalesEntryPage() {
                                 ))
                               ) : (
                                 <div className="px-3 py-2 text-gray-500 text-sm">
-                                  No transports found. Click "Add New" to create one.
+                                  No transports found. Click Add New to create one.
                                 </div>
                               )}
                             </div>
@@ -694,11 +748,16 @@ export default function SalesEntryPage() {
                           id="advance"
                           type="number"
                           min="0"
+                          max={freightAmount || undefined}
                           step="0.01"
                           value={advance}
-                          onChange={(e) => setAdvance(toNonNegative(e.target.value))}
+                          onChange={(e) => handleAdvanceChange(e.target.value)}
                           placeholder="Enter advance amount"
+                          className={advanceError ? 'border-red-500 focus-visible:ring-red-500' : ''}
                         />
+                        {advanceError ? (
+                          <p className="mt-1 text-right text-sm text-red-600">{advanceError}</p>
+                        ) : null}
                       </div>
                       <div>
                         <Label htmlFor="toPay">To Pay</Label>
@@ -721,7 +780,7 @@ export default function SalesEntryPage() {
                     {/* Add Item Form */}
                     <div className="border rounded-lg p-4">
                       <h3 className="font-semibold mb-4">Add Item</h3>
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
                         <div className="lg:col-span-2">
                           <Label htmlFor="itemProduct">Sales Items</Label>
                           <Select value={currentItem.salesItemId} onValueChange={(value) => {
@@ -731,13 +790,24 @@ export default function SalesEntryPage() {
                               <SelectValue placeholder="Select Sales Item" />
                             </SelectTrigger>
                             <SelectContent>
-                              {salesItems.map((salesItem) => (
-                                <SelectItem key={salesItem.id} value={salesItem.id}>
-                                  {salesItem.salesItemName} ({salesItem.product?.name || 'No product'})
-                                </SelectItem>
-                              ))}
+                              {salesItems.length > 0 ? (
+                                salesItems.map((salesItem) => (
+                                  <SelectItem key={salesItem.id} value={salesItem.id}>
+                                    {salesItem.salesItemName} ({salesItem.product?.name || 'No product'})
+                                  </SelectItem>
+                                ))
+                              ) : (
+                                <div className="px-3 py-2 text-sm text-gray-500">
+                                  No Sales Item Master data found.
+                                </div>
+                              )}
                             </SelectContent>
                           </Select>
+                          {salesItems.length === 0 ? (
+                            <p className="mt-1 text-xs text-gray-500">
+                              Add entries in Master &gt; Sales Item to continue.
+                            </p>
+                          ) : null}
                         </div>
                         <div>
                           <Label htmlFor="noOfBags">No. of Bags</Label>
@@ -841,10 +911,50 @@ export default function SalesEntryPage() {
                   </div>
                    </div>
 
-                {/* Section 4 - Totals */}
-                <div className="mt-0 -mt-4">
-                  <h3 className="text-lg font-semibold mb-2 pb-2 border-b">4. Totals</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {/* Section 4 - Additional Charges */}
+                <div className="mt-2">
+                  <h3 className="text-lg font-semibold mb-2 pb-2 border-b">4. Additional Charges</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <Label htmlFor="advanceExpense">Advance Expense</Label>
+                      <Input
+                        id="advanceExpense"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={advanceExpense}
+                        onChange={(e) => setAdvanceExpense(toNonNegative(e.target.value))}
+                        placeholder="Enter advance expense"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="insurance">Insurance</Label>
+                      <Input
+                        id="insurance"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={insurance}
+                        onChange={(e) => setInsurance(toNonNegative(e.target.value))}
+                        placeholder="Enter insurance amount"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="additionalTotal">Additional Total</Label>
+                      <Input
+                        id="additionalTotal"
+                        value={additionalTotal.toFixed(2)}
+                        readOnly
+                        className="bg-gray-100"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 5 - Totals */}
+                <div className="mt-3">
+                  <h3 className="text-lg font-semibold mb-2 pb-2 border-b">5. Totals</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                     <div className="text-center p-2 bg-blue-50 rounded-lg border border-blue-200">
                       <Label className="text-xs text-gray-600 block">Total Sales Item Qty</Label>
                       <p className="text-lg font-bold text-blue-600">{totalProductItemQty}</p>
@@ -858,8 +968,12 @@ export default function SalesEntryPage() {
                       <p className="text-lg font-bold text-yellow-600">{totalWeight.toFixed(2)}</p>
                     </div>
                     <div className="text-center p-2 bg-purple-50 rounded-lg border border-purple-200">
-                      <Label className="text-xs text-gray-600 block">Total Amount</Label>
+                      <Label className="text-xs text-gray-600 block">Items Total</Label>
                       <p className="text-lg font-bold text-purple-600">₹{totalAmount.toFixed(2)}</p>
+                    </div>
+                    <div className="text-center p-2 bg-emerald-50 rounded-lg border border-emerald-200">
+                      <Label className="text-xs text-gray-600 block">Grand Total</Label>
+                      <p className="text-lg font-bold text-emerald-700">₹{grandTotal.toFixed(2)}</p>
                     </div>
                   </div>
                 </div>

@@ -15,7 +15,7 @@ const updatePaymentSchema = z
   .object({
     amount: z.coerce.number().positive().optional(),
     payDate: z.string().trim().optional(),
-    mode: z.enum(['cash', 'online', 'bank']).optional(),
+    mode: z.string().trim().min(1).optional(),
     txnRef: z.string().trim().max(100).optional().nullable(),
     note: z.string().trim().max(400).optional().nullable(),
     status: z.enum(['pending', 'paid']).optional()
@@ -92,7 +92,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin'])
+  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin', 'company_user'])
   if (!authResult.ok) return authResult.response
 
   try {
@@ -227,7 +227,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin'])
+  const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin', 'company_user'])
   if (!authResult.ok) return authResult.response
 
   try {

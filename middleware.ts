@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { normalizeAppRole } from '@/lib/api-security'
 
 const mutatingMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+const ENABLE_RATE_LIMIT = process.env.DISABLE_RATE_LIMIT !== 'true'
 const alwaysPublicApiRoutes = new Set([
   '/api/auth',
   '/api/auth/login',
@@ -158,7 +159,7 @@ export async function middleware(request: NextRequest) {
     const isSuperAdminRequest =
       !isPublic && !!payload && normalizeAppRole(String(payload.role || '')) === 'super_admin'
 
-    if (!isSuperAdminRequest) {
+    if (ENABLE_RATE_LIMIT && !isSuperAdminRequest) {
       const globalLimit = consumeRateLimit(`global:${ip}`, 60, 60 * 1000)
       if (!globalLimit.allowed) {
         return tooManyRequestsResponse('Rate limit exceeded', globalLimit.retryAfter)

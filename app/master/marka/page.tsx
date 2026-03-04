@@ -157,19 +157,6 @@ export default function MarkaMasterPage() {
     if (response.ok) fetchMarkas()
   }
 
-  const handleAddDummyData = async () => {
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
-    const response = await fetch(`/api/markas?companyId=${companyId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seed: true })
-    })
-    const result = await response.json()
-    alert(result.message || result.error || 'Operation completed')
-    if (response.ok) fetchMarkas()
-  }
-
   const handleExportCsv = () => {
     if (markas.length === 0) return alert('No marka data to export')
     const headers = ['MarkaNumber', 'Description', 'Status', 'CreatedAt']
@@ -212,7 +199,6 @@ export default function MarkaMasterPage() {
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
-              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
               <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
               <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
                 <Plus className="h-4 w-4" />

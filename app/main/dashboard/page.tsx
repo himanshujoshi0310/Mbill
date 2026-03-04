@@ -143,7 +143,20 @@ function MainDashboardPageContent() {
 
   const loadCompanies = async (signal?: AbortSignal) => {
     const res = await fetch('/api/companies', { signal })
-    if (!res.ok) throw new Error('Failed to load companies')
+    if (!res.ok) {
+      if (res.status === 401) {
+        router.push('/login')
+        return []
+      }
+      const raw = await res.text().catch(() => '')
+      if (res.status >= 500) {
+        console.error('Failed to load companies API', {
+          status: res.status,
+          preview: raw.slice(0, 120)
+        })
+      }
+      return []
+    }
     const rows = await res.json()
     return Array.isArray(rows)
       ? rows.map((row) => ({
@@ -228,6 +241,10 @@ function MainDashboardPageContent() {
         if (nextSelected.length === 0 && queryCompanyId && availableIds.has(queryCompanyId)) {
           nextSelected = [queryCompanyId]
         }
+        if (nextSelected.length === 0 && queryCompanyId && list.length === 0) {
+          nextSelected = [queryCompanyId]
+          setCompanies([{ id: queryCompanyId, name: 'Current Company' }])
+        }
         if (nextSelected.length === 0) {
           nextSelected = list.map((item) => item.id)
         }
@@ -240,7 +257,13 @@ function MainDashboardPageContent() {
         if (isAbortError(error)) {
           return
         }
-        setUiError('Failed to load company list')
+        if (queryCompanyId) {
+          setCompanies([{ id: queryCompanyId, name: 'Current Company' }])
+          setSelectedCompanyIds([queryCompanyId])
+          setPrimaryCompanyId(queryCompanyId)
+        } else {
+          setUiError('Failed to load company list')
+        }
       } finally {
         setLoading(false)
       }

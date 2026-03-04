@@ -45,7 +45,8 @@ interface SalesBill {
       id: string
       name: string
     }
-    qty: number
+    qty?: number
+    weight?: number
     rate: number
     amount: number
   }>
@@ -84,6 +85,15 @@ function SalesEditPageContent() {
   const [receivedAmount, setReceivedAmount] = useState('')
   const [balance, setBalance] = useState('')
 
+  const toDateInputValue = (value: unknown) => {
+    if (!value) return new Date().toISOString().split('T')[0]
+    const parsed = new Date(String(value))
+    if (!Number.isFinite(parsed.getTime())) {
+      return new Date().toISOString().split('T')[0]
+    }
+    return parsed.toISOString().split('T')[0]
+  }
+
   useEffect(() => {
     if (billId && companyId) {
       fetchData()
@@ -114,18 +124,27 @@ function SalesEditPageContent() {
         fetch(`/api/sales-bills?companyId=${companyId}&billId=${billId}`)
       ])
 
-      const productsData = await productsRes.json()
-      const partiesData = await partiesRes.json()
-      const billData: SalesBill = await billRes.json()
+      if (!productsRes.ok || !partiesRes.ok || !billRes.ok) {
+        throw new Error('Failed to load sales edit data')
+      }
+
+      const productsData = await productsRes.json().catch(() => [])
+      const partiesData = await partiesRes.json().catch(() => [])
+      const billPayload = await billRes.json().catch(() => null)
+      const billData = (Array.isArray(billPayload) ? billPayload[0] : billPayload) as SalesBill | null
+
+      if (!billData?.id) {
+        throw new Error('Sales bill not found')
+      }
 
       setProducts(productsData)
       setParties(partiesData)
       setSalesBill(billData)
 
       // Populate form with existing data
-      setInvoiceNo(billData.billNo)
-      setInvoiceDate(new Date(billData.billDate).toISOString().split('T')[0])
-      setPartyName(billData.party.id)
+      setInvoiceNo(String(billData.billNo || '1'))
+      setInvoiceDate(toDateInputValue(billData.billDate))
+      setPartyName(String(billData.party?.id || ''))
       setPartyAddress(billData.party.address || '')
       setPartyContact(billData.party.phone1 || '')
       setTotalAmount(billData.totalAmount.toString())
@@ -167,7 +186,7 @@ function SalesEditPageContent() {
         salesItems: salesBill.salesItems.map(item => ({
           productId: item.productId,
           productName: item.product.name,
-          totalWeight: item.qty,
+          totalWeight: Number(item.weight ?? item.qty ?? 0),
           rate: item.rate,
           amount: item.amount
         })),
@@ -188,7 +207,13 @@ function SalesEditPageContent() {
       })
 
       console.log('Response status:', response.status)
-      const responseData = await response.json()
+      const responseText = await response.text()
+      let responseData: any = {}
+      try {
+        responseData = responseText ? JSON.parse(responseText) : {}
+      } catch {
+        responseData = { error: 'Invalid server response' }
+      }
       console.log('Response data:', responseData)
 
       if (response.ok) {

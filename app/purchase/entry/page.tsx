@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,10 @@ import DashboardLayout from '@/app/components/DashboardLayout'
 import { kgToQuintal, round4, toKg } from '@/lib/unit-conversion'
 import { getCompanyIdFromSearch, resolveCompanyId } from '@/lib/company-context'
 import { isAbortError } from '@/lib/http'
+import {
+  clearDefaultPurchaseProductId,
+  getDefaultPurchaseProductId
+} from '@/lib/default-product'
 
 interface Product {
   id: string
@@ -39,6 +43,7 @@ export default function PurchaseEntryPage() {
   const [krashakAnubandhNumber, setKrashakAnubandhNumber] = useState('')
   const [markaNumber, setMarkaNumber] = useState('')
   const [selectedProduct, setSelectedProduct] = useState('')
+  const [defaultProductId, setDefaultProductIdState] = useState('')
   const [selectedUserUnit, setSelectedUserUnit] = useState('')
   const [noOfBags, setNoOfBags] = useState('')
   const [hammali, setHammali] = useState('')
@@ -47,6 +52,7 @@ export default function PurchaseEntryPage() {
   const [payableAmount, setPayableAmount] = useState('')
   const [paidAmount, setPaidAmount] = useState('')
   const [balance, setBalance] = useState('')
+  const [paidAmountError, setPaidAmountError] = useState('')
   const [billNumber, setBillNumber] = useState('')
   const [lastBillNumber, setLastBillNumber] = useState(0)
   const toNonNegative = (value: string) => {
@@ -56,13 +62,29 @@ export default function PurchaseEntryPage() {
     return String(Math.max(0, parsed))
   }
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void fetchData(controller.signal)
-    return () => controller.abort()
-  }, [])
+  const handlePaidAmountChange = (value: string) => {
+    const normalized = toNonNegative(value)
+    if (normalized === '') {
+      setPaidAmount('')
+      setPaidAmountError('')
+      return
+    }
 
-  const fetchData = async (signal?: AbortSignal) => {
+    const nextPaid = Number(normalized)
+    const maxPayable = Number(payableAmount || 0)
+    const hasPayable = payableAmount !== ''
+
+    if (hasPayable && nextPaid > maxPayable) {
+      setPaidAmount(String(maxPayable))
+      setPaidAmountError('Paid amount cannot be greater than payable amount')
+      return
+    }
+
+    setPaidAmount(normalized)
+    setPaidAmountError('')
+  }
+
+  const fetchData = useCallback(async () => {
     setLoading(true)
     try {
       const companyId = await resolveCompanyId(window.location.search)
@@ -76,11 +98,10 @@ export default function PurchaseEntryPage() {
 
       // Same-origin fetch automatically sends auth cookies.
       const [productsRes, billsRes, unitsRes] = await Promise.all([
-        fetch(`/api/products?companyId=${companyId}`, { signal }),
-        fetch(`/api/purchase-bills?companyId=${companyId}&last=true`, { signal }),
-        fetch(`/api/units?companyId=${companyId}`, { signal })
+        fetch(`/api/products?companyId=${companyId}`),
+        fetch(`/api/purchase-bills?companyId=${companyId}&last=true`),
+        fetch(`/api/units?companyId=${companyId}`)
       ])
-      if (signal?.aborted) return
 
       // Handle auth/company context failures quickly without retry loops.
       if (!productsRes.ok) {
@@ -104,6 +125,15 @@ export default function PurchaseEntryPage() {
         // Ensure products is always an array
         if (Array.isArray(productsData)) {
           setProducts(productsData)
+          const rememberedDefault = getDefaultPurchaseProductId(companyId)
+          const hasRememberedDefault = productsData.some((item: Product) => item.id === rememberedDefault)
+          if (hasRememberedDefault) {
+            setDefaultProductIdState(rememberedDefault)
+            setSelectedProduct((current) => current || rememberedDefault)
+          } else {
+            clearDefaultPurchaseProductId(companyId)
+            setDefaultProductIdState('')
+          }
         } else if (productsData && typeof productsData.error === 'string') {
           console.error('Products API returned error message:', productsData.error)
           setProducts([])
@@ -133,7 +163,11 @@ export default function PurchaseEntryPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [router])
+
+  useEffect(() => {
+    void fetchData()
+  }, [fetchData])
 
   // Calculate hammali when noOfBags changes
   useEffect(() => {
@@ -159,13 +193,23 @@ export default function PurchaseEntryPage() {
 
   // Calculate balance when payable or paid changes
   useEffect(() => {
-    if (payableAmount && paidAmount) {
-      const payable = parseFloat(payableAmount) || 0
-      const paid = parseFloat(paidAmount) || 0
-      setBalance(Math.max(0, payable - paid).toString())
+    const payable = parseFloat(payableAmount) || 0
+    const paid = parseFloat(paidAmount) || 0
+
+    if (payableAmount !== '' && paidAmount && paid > payable) {
+      setPaidAmount(String(payable))
+      setPaidAmountError('Paid amount cannot be greater than payable amount')
+      setBalance('0')
+      return
     } else {
-      setBalance('')
+      setPaidAmountError('')
     }
+
+    if (payableAmount && paidAmount) {
+      setBalance(Math.max(0, payable - paid).toString())
+      return
+    }
+    setBalance('')
   }, [payableAmount, paidAmount])
 
   useEffect(() => {
@@ -197,7 +241,7 @@ export default function PurchaseEntryPage() {
 
     // Check if paid amount exceeds payable amount
     if (paid > payable) {
-      alert('Paid amount cannot be more than payable amount!')
+      setPaidAmountError('Paid amount cannot be greater than payable amount')
       return
     }
 
@@ -274,6 +318,7 @@ export default function PurchaseEntryPage() {
   }
 
   const companyId = getCompanyIdFromSearch(window.location.search)
+  const defaultProductName = products.find((product) => product.id === defaultProductId)?.name || ''
 
   return (
     <DashboardLayout companyId={companyId}>
@@ -374,7 +419,7 @@ export default function PurchaseEntryPage() {
                   <div>
                     <Label htmlFor="product">Purchase Product</Label>
                     <Select value={selectedProduct} onValueChange={setSelectedProduct}>
-                      <SelectTrigger>
+                      <SelectTrigger className="flex-1">
                         <SelectValue placeholder="Select Product" />
                       </SelectTrigger>
                       <SelectContent>
@@ -385,6 +430,9 @@ export default function PurchaseEntryPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                    {defaultProductName ? (
+                      <p className="mt-1 text-xs text-slate-600">Default from Product Master: {defaultProductName}</p>
+                    ) : null}
                   </div>
 
                   {/* User Unit */}
@@ -478,11 +526,16 @@ export default function PurchaseEntryPage() {
                       id="paidAmount"
                       type="number"
                       min="0"
+                      max={payableAmount || undefined}
                       step="0.01"
                       value={paidAmount}
-                      onChange={(e) => setPaidAmount(toNonNegative(e.target.value))}
+                      onChange={(e) => handlePaidAmountChange(e.target.value)}
                       placeholder="Enter paid amount"
+                      className={paidAmountError ? 'border-red-500 focus-visible:ring-red-500' : ''}
                     />
+                    {paidAmountError ? (
+                      <p className="mt-1 text-right text-sm text-red-600">{paidAmountError}</p>
+                    ) : null}
                   </div>
 
                   {/* Balance */}

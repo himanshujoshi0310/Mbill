@@ -38,6 +38,70 @@ interface SalesBill {
   }>
 }
 
+function normalizeSalesBill(raw: any): SalesBill {
+  return {
+    id: String(raw?.id || ''),
+    invoiceNo: String(raw?.invoiceNo || raw?.billNo || ''),
+    invoiceDate: String(raw?.invoiceDate || raw?.billDate || ''),
+    totalAmount: Number(raw?.totalAmount || 0),
+    receivedAmount: Number(raw?.receivedAmount || 0),
+    balanceAmount: Number(raw?.balanceAmount || 0),
+    status: String(raw?.status || 'unpaid'),
+    party: {
+      name: String(raw?.party?.name || ''),
+      address: String(raw?.party?.address || ''),
+      phone1: String(raw?.party?.phone1 || '')
+    },
+    salesItems: Array.isArray(raw?.salesItems)
+      ? raw.salesItems.map((item: any) => ({
+          weight: Number(item?.weight || item?.qty || 0),
+          qty: Number(item?.qty || item?.weight || 0),
+          rate: Number(item?.rate || 0),
+          amount: Number(item?.amount || 0),
+          product: item?.product ? { name: String(item.product.name || '') } : undefined
+        }))
+      : []
+  }
+}
+
+function isValidDateValue(value: string): boolean {
+  if (!value) return false
+  const d = new Date(value)
+  return Number.isFinite(d.getTime())
+}
+
+function parseDateOrNull(value: string): Date | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) ? parsed : null
+}
+
+function startOfDay(value: string): Date | null {
+  const date = parseDateOrNull(value)
+  if (!date) return null
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function endOfDay(value: string): Date | null {
+  const date = parseDateOrNull(value)
+  if (!date) return null
+  date.setHours(23, 59, 59, 999)
+  return date
+}
+
+function toDateInputValue(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function formatDateSafe(value: string): string {
+  if (!isValidDateValue(value)) return '-'
+  return new Date(value).toLocaleDateString()
+}
+
 export default function SalesListPage() {
   const router = useRouter()
   const [salesBills, setSalesBills] = useState<SalesBill[]>([])
@@ -93,7 +157,7 @@ export default function SalesListPage() {
         return
       }
       const raw = await response.json().catch(() => [])
-      const data = Array.isArray(raw) ? raw : []
+      const data = (Array.isArray(raw) ? raw : []).map(normalizeSalesBill)
       setSalesBills(data)
       setClientCache(cacheKey, data)
       setLoading(false)
@@ -125,11 +189,23 @@ export default function SalesListPage() {
     }
 
     if (dateFrom) {
-      filtered = filtered.filter(bill => new Date(bill.invoiceDate) >= new Date(dateFrom))
+      const fromDate = startOfDay(dateFrom)
+      if (!fromDate) return filtered
+      filtered = filtered.filter((bill) => {
+        const billDate = parseDateOrNull(bill.invoiceDate)
+        if (!billDate) return false
+        return billDate >= fromDate
+      })
     }
 
     if (dateTo) {
-      filtered = filtered.filter(bill => new Date(bill.invoiceDate) <= new Date(dateTo))
+      const toDate = endOfDay(dateTo)
+      if (!toDate) return filtered
+      filtered = filtered.filter((bill) => {
+        const billDate = parseDateOrNull(bill.invoiceDate)
+        if (!billDate) return false
+        return billDate <= toDate
+      })
     }
 
     if (weight) {
@@ -163,6 +239,23 @@ export default function SalesListPage() {
     setPayable('')
   }
 
+  const handleAutoFilters = () => {
+    const today = new Date()
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+
+    let nextFrom = dateFrom || toDateInputValue(monthStart)
+    let nextTo = dateTo || toDateInputValue(today)
+
+    if (nextFrom > nextTo) {
+      const tmp = nextFrom
+      nextFrom = nextTo
+      nextTo = tmp
+    }
+
+    setDateFrom(nextFrom)
+    setDateTo(nextTo)
+  }
+
   const handleView = (billId: string) => {
     router.push(`/sales/view?billId=${billId}&companyId=${companyId}`)
   }
@@ -177,6 +270,10 @@ export default function SalesListPage() {
     if (!bill) return
 
     // Check if bill is within 15 days from today
+    if (!isValidDateValue(bill.invoiceDate)) {
+      alert('Invalid bill date. Please edit and save this bill first.')
+      return
+    }
     const billDate = new Date(bill.invoiceDate)
     const currentDate = new Date()
     const daysDifference = Math.floor((currentDate.getTime() - billDate.getTime()) / (1000 * 60 * 60 * 24))
@@ -335,7 +432,7 @@ export default function SalesListPage() {
               </div>
             </div>
             <div className="flex gap-2 mt-4">
-              <Button disabled>Auto</Button>
+              <Button onClick={handleAutoFilters}>Auto</Button>
               <Button variant="outline" onClick={clearFilters}>Clear</Button>
               <Button variant="outline" onClick={exportToExcel}>
                 <Download className="w-4 h-4 mr-2" />
@@ -376,8 +473,8 @@ export default function SalesListPage() {
                 <TableBody>
                   {filteredBills.map((bill) => (
                     <TableRow key={bill.id}>
-                      <TableCell>{bill.invoiceNo}</TableCell>
-                      <TableCell>{new Date(bill.invoiceDate).toLocaleDateString()}</TableCell>
+                      <TableCell>{bill.invoiceNo || '-'}</TableCell>
+                      <TableCell>{formatDateSafe(bill.invoiceDate)}</TableCell>
                       <TableCell>{bill.party.name}</TableCell>
                       <TableCell>{bill.party.address}</TableCell>
                       <TableCell>{bill.party.phone1}</TableCell>

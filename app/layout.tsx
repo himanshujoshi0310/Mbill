@@ -85,6 +85,23 @@ export default function RootLayout({
         return originalFetch(...args);
       }
 
+      const safeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        try {
+          return await originalFetch(input, init)
+        } catch (error) {
+          if (isAbortError(error)) {
+            return new Response(
+              JSON.stringify({ error: 'Request aborted', aborted: true }),
+              {
+                status: 499,
+                headers: { 'Content-Type': 'application/json' }
+              }
+            )
+          }
+          throw error
+        }
+      }
+
       if (
         isInternalApi &&
         ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
@@ -98,7 +115,7 @@ export default function RootLayout({
       }
       
       // Try API call first (cookies are sent automatically with HttpOnly)
-      let response = await originalFetch(url, requestInit);
+      let response = await safeFetch(url, requestInit);
 
       // Preserve /api/super-admin/auth 401 to show in-page login errors.
       if (response.status === 401 && isSuperAdminApi && isSuperAdminAuthEndpoint) {
@@ -111,7 +128,7 @@ export default function RootLayout({
         
         if (refreshed) {
           // Retry the original request with new token
-          response = await originalFetch(url, requestInit);
+          response = await safeFetch(url, requestInit);
           if (response.status !== 401) {
             return response;
           }

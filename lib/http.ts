@@ -1,6 +1,11 @@
 export function isAbortError(error: unknown): boolean {
   if (!error) return false
 
+  if (typeof error === 'string') {
+    const message = error.toLowerCase()
+    return message.includes('aborted') || message.includes('aborterror')
+  }
+
   if (error instanceof DOMException && error.name === 'AbortError') {
     return true
   }
@@ -13,9 +18,21 @@ export function isAbortError(error: unknown): boolean {
     }
   }
 
-  const candidate = error as { name?: unknown; code?: unknown; message?: unknown }
+  const candidate = error as { name?: unknown; code?: unknown; message?: unknown; cause?: unknown }
   if (candidate?.name === 'AbortError' || candidate?.code === 'ABORT_ERR') {
     return true
+  }
+
+  if (typeof candidate?.message === 'string') {
+    const message = candidate.message.toLowerCase()
+    if (message.includes('aborted') || message.includes('aborterror')) {
+      return true
+    }
+  }
+
+  const cause = candidate?.cause as unknown
+  if (cause && cause !== error) {
+    return isAbortError(cause)
   }
 
   return false

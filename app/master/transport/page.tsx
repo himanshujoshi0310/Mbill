@@ -197,19 +197,6 @@ export default function TransportMasterPage() {
     if (response.ok) fetchTransports()
   }
 
-  const handleAddDummyData = async () => {
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
-    const response = await fetch(`/api/transports?companyId=${companyId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seed: true })
-    })
-    const result = await response.json()
-    alert(result.message || result.error || 'Operation completed')
-    if (response.ok) fetchTransports()
-  }
-
   const handleExportCsv = () => {
     if (transports.length === 0) return alert('No transport data to export')
     const headers = ['Transporter', 'VehicleNumber', 'DriverName', 'DriverPhone', 'Capacity', 'CreatedAt']
@@ -261,7 +248,6 @@ export default function TransportMasterPage() {
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleExportCsv}>Export CSV</Button>
-              <Button variant="outline" onClick={handleAddDummyData}>Add Dummy Data</Button>
               <Button variant="destructive" onClick={handleDeleteAll}>Delete All</Button>
               <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
                 <Plus className="h-4 w-4" />

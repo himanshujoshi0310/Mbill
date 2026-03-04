@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { validateStockBeforeSale } from '@/lib/stock-automation'
 import { z } from 'zod'
-import { ensureCompanyAccess, getRequestAuthContext, parseJsonWithSchema } from '@/lib/api-security'
+import { ensureCompanyAccess, getRequestAuthContext, normalizeId, parseJsonWithSchema } from '@/lib/api-security'
+import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 const salesItemSchema = z.object({
   productId: z.string().min(1),
@@ -22,6 +23,52 @@ const salesCreateSchema = z.object({
   salesItems: z.array(salesItemSchema).min(1),
   totalAmount: z.union([z.string(), z.number()]).optional()
 })
+
+const salesUpdateSchema = z.object({
+  id: z.string().optional(),
+  companyId: z.string().min(1),
+  invoiceNo: z.string().optional(),
+  invoiceDate: z.string().optional(),
+  partyName: z.string().optional(),
+  partyAddress: z.string().optional(),
+  partyContact: z.string().optional(),
+  salesItems: z.array(z.object({
+    productId: z.string().min(1),
+    totalWeight: z.coerce.number().min(0).optional(),
+    qty: z.coerce.number().min(0).optional(),
+    weight: z.coerce.number().min(0).optional(),
+    rate: z.coerce.number().min(0).optional(),
+    amount: z.coerce.number().min(0).optional()
+  })).optional(),
+  totalAmount: z.union([z.string(), z.number()]).optional(),
+  receivedAmount: z.union([z.string(), z.number()]).optional(),
+  balanceAmount: z.union([z.string(), z.number()]).optional(),
+  status: z.string().optional()
+})
+
+function safeToDate(value?: string): Date {
+  if (!value) return new Date()
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date()
+}
+
+function toNonNegativeNumber(value: unknown, fallback = 0): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(0, parsed)
+}
+
+function extractBillSequence(billNo: string): number {
+  if (!billNo) return 0
+  const trimmed = billNo.trim()
+  if (!trimmed) return 0
+  if (/^\d+$/.test(trimmed)) return Number.parseInt(trimmed, 10)
+  const chunks = trimmed.match(/\d+/g)
+  if (!chunks || chunks.length === 0) return 0
+  const lastChunk = chunks[chunks.length - 1]
+  const parsed = Number.parseInt(lastChunk, 10)
+  return Number.isFinite(parsed) ? parsed : 0
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -94,7 +141,7 @@ export async function POST(request: NextRequest) {
         data: {
           companyId,
           billNo: invoiceNo || '1',
-          billDate: invoiceDate ? new Date(invoiceDate) : new Date(),
+          billDate: safeToDate(invoiceDate),
           partyId: party.id,
           totalAmount: Number(totalAmount) || 0,
           receivedAmount: 0,
@@ -125,7 +172,7 @@ export async function POST(request: NextRequest) {
         await tx.stockLedger.create({
           data: {
             companyId,
-            entryDate: invoiceDate ? new Date(invoiceDate) : new Date(),
+            entryDate: safeToDate(invoiceDate),
             productId: item.productId,
             type: 'sales',
             qtyOut: Number(item.weight) || 0,
@@ -152,7 +199,8 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const companyId = searchParams.get('companyId')
+    const companyId = normalizeId(searchParams.get('companyId'))
+    const billId = normalizeId(searchParams.get('billId'))
     const last = searchParams.get('last')
 
     if (!companyId) {
@@ -167,27 +215,256 @@ export async function GET(request: NextRequest) {
         select: { billNo: true }
       })
       const lastBillNumber = bills.reduce((max, bill) => {
-        const value = Number.parseInt(bill.billNo, 10)
+        const value = extractBillSequence(bill.billNo)
         return Number.isFinite(value) ? Math.max(max, value) : max
       }, 0)
       return NextResponse.json({ lastBillNumber })
     }
 
-    const salesBills = await prisma.salesBill.findMany({
-      where: { companyId },
-      include: {
-        party: true,
-        salesItems: {
-          include: {
-            product: true
-          }
+    if (billId) {
+      const bill = await prisma.salesBill.findFirst({
+        where: {
+          id: billId,
+          companyId
+        },
+        include: {
+          party: true,
+          salesItems: {
+            include: {
+              product: true
+            }
+          },
+          transportBills: true
         }
-      },
-      orderBy: { createdAt: 'desc' }
-    })
+      })
+
+      if (!bill) {
+        return NextResponse.json({ error: 'Sales bill not found' }, { status: 404 })
+      }
+
+      return NextResponse.json(bill)
+    }
+
+    const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
+    const whereClause = {
+      companyId,
+      ...(pagination.search
+        ? {
+            OR: [
+              { billNo: { contains: pagination.search } },
+              { status: { contains: pagination.search } }
+            ]
+          }
+        : {})
+    }
+
+    const [salesBills, total] = await Promise.all([
+      prisma.salesBill.findMany({
+        where: whereClause,
+        include: {
+          party: true,
+          salesItems: {
+            include: {
+              product: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
+      }),
+      pagination.enabled ? prisma.salesBill.count({ where: whereClause }) : Promise.resolve(0)
+    ])
+
+    if (pagination.enabled) {
+      return NextResponse.json({
+        data: salesBills,
+        meta: buildPaginationMeta(total, pagination)
+      })
+    }
 
     return NextResponse.json(salesBills)
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const parsed = await parseJsonWithSchema(request, salesUpdateSchema)
+    if (!parsed.ok) return parsed.response
+    const body = parsed.data
+
+    const companyId = normalizeId(body.companyId)
+    const billId = normalizeId(body.id || new URL(request.url).searchParams.get('billId'))
+
+    if (!companyId || !billId) {
+      return NextResponse.json({ error: 'Company ID and bill ID are required' }, { status: 400 })
+    }
+
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
+    const existing = await prisma.salesBill.findFirst({
+      where: {
+        id: billId,
+        companyId
+      },
+      include: {
+        salesItems: true
+      }
+    })
+
+    if (!existing) {
+      return NextResponse.json({ error: 'Sales bill not found' }, { status: 404 })
+    }
+
+    let partyId = existing.partyId
+    const requestedParty = normalizeId(body.partyName)
+    if (requestedParty) {
+      const party = await prisma.party.findFirst({
+        where: {
+          id: requestedParty,
+          companyId
+        }
+      })
+      if (party) {
+        partyId = party.id
+        if (body.partyAddress !== undefined || body.partyContact !== undefined) {
+          await prisma.party.update({
+            where: { id: party.id },
+            data: {
+              address: body.partyAddress ?? party.address,
+              phone1: body.partyContact ?? party.phone1
+            }
+          })
+        }
+      }
+    }
+
+    const nextBillDate = body.invoiceDate ? safeToDate(body.invoiceDate) : existing.billDate
+    const nextTotal = body.totalAmount !== undefined ? toNonNegativeNumber(body.totalAmount, existing.totalAmount) : existing.totalAmount
+    const nextReceived = body.receivedAmount !== undefined ? toNonNegativeNumber(body.receivedAmount, existing.receivedAmount) : existing.receivedAmount
+    const nextBalance = body.balanceAmount !== undefined
+      ? toNonNegativeNumber(body.balanceAmount, existing.balanceAmount)
+      : Math.max(0, nextTotal - nextReceived)
+    const nextStatus = body.status || (nextBalance === 0 ? 'paid' : nextReceived > 0 ? 'partial' : 'unpaid')
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const bill = await tx.salesBill.update({
+        where: { id: existing.id },
+        data: {
+          billNo: body.invoiceNo?.trim() || existing.billNo,
+          billDate: nextBillDate,
+          partyId,
+          totalAmount: nextTotal,
+          receivedAmount: nextReceived,
+          balanceAmount: nextBalance,
+          status: nextStatus
+        },
+        include: {
+          party: true,
+          salesItems: {
+            include: {
+              product: true
+            }
+          }
+        }
+      })
+
+      if (Array.isArray(body.salesItems) && body.salesItems.length > 0) {
+        await tx.salesItem.deleteMany({ where: { salesBillId: existing.id } })
+        await tx.stockLedger.deleteMany({
+          where: {
+            companyId,
+            refTable: 'sales_bills',
+            refId: existing.id
+          }
+        })
+
+        for (const item of body.salesItems) {
+          const normalizedWeight = toNonNegativeNumber(
+            item.weight ?? item.totalWeight ?? item.qty ?? 0,
+            0
+          )
+          await tx.salesItem.create({
+            data: {
+              salesBillId: existing.id,
+              productId: item.productId,
+              weight: normalizedWeight,
+              rate: toNonNegativeNumber(item.rate, 0),
+              amount: toNonNegativeNumber(item.amount, 0),
+              bags: null
+            }
+          })
+          await tx.stockLedger.create({
+            data: {
+              companyId,
+              entryDate: nextBillDate,
+              productId: item.productId,
+              type: 'sales',
+              qtyOut: normalizedWeight,
+              refTable: 'sales_bills',
+              refId: existing.id
+            }
+          })
+        }
+      }
+
+      return bill
+    })
+
+    return NextResponse.json({ success: true, salesBill: updated })
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const searchParams = new URL(request.url).searchParams
+    const companyId = normalizeId(searchParams.get('companyId'))
+    const billId = normalizeId(searchParams.get('billId'))
+
+    if (!companyId || !billId) {
+      return NextResponse.json({ error: 'Company ID and bill ID are required' }, { status: 400 })
+    }
+
+    const denied = await ensureCompanyAccess(request, companyId)
+    if (denied) return denied
+
+    const existing = await prisma.salesBill.findFirst({
+      where: {
+        id: billId,
+        companyId
+      },
+      select: { id: true }
+    })
+
+    if (!existing) {
+      return NextResponse.json({ error: 'Sales bill not found' }, { status: 404 })
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.stockLedger.deleteMany({
+        where: {
+          companyId,
+          refTable: 'sales_bills',
+          refId: billId
+        }
+      })
+      await tx.salesBill.delete({
+        where: { id: billId }
+      })
+    })
+
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    )
   }
 }

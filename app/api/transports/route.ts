@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
 import { cleanString, normalizeTenDigitPhone, parseNonNegativeNumber } from '@/lib/field-validation'
+import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 function normalizeCompanyId(raw: string | null): string | null {
   if (!raw) return null
@@ -22,6 +23,8 @@ const postSchema = z.object({
   vehicleNumber: z.string().optional().nullable(),
   driverName: z.string().optional().nullable(),
   driverPhone: z.string().optional().nullable(),
+  vehicleType: z.string().optional().nullable(),
+  description: z.string().optional().nullable(),
   capacity: z.union([z.number(), z.string()]).optional().nullable(),
   freightRate: z.union([z.number(), z.string()]).optional().nullable(),
   isActive: z.boolean().optional(),
@@ -33,6 +36,8 @@ const putSchema = z.object({
   vehicleNumber: z.string().optional().nullable(),
   driverName: z.string().optional().nullable(),
   driverPhone: z.string().optional().nullable(),
+  vehicleType: z.string().optional().nullable(),
+  description: z.string().optional().nullable(),
   capacity: z.union([z.number(), z.string()]).optional().nullable(),
   freightRate: z.union([z.number(), z.string()]).optional().nullable(),
   isActive: z.boolean().optional()
@@ -40,7 +45,8 @@ const putSchema = z.object({
 
 export async function GET(request: NextRequest) {
   try {
-    const companyId = normalizeCompanyId(new URL(request.url).searchParams.get('companyId'))
+    const { searchParams } = new URL(request.url)
+    const companyId = normalizeCompanyId(searchParams.get('companyId'))
     if (!companyId) {
       return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
     }
@@ -48,10 +54,39 @@ export async function GET(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    const transports = await prisma.transport.findMany({
-      where: { companyId },
-      orderBy: { transporterName: 'asc' }
-    })
+    const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
+    const where = {
+      companyId,
+      ...(pagination.search
+        ? {
+            OR: [
+              { transporterName: { contains: pagination.search } },
+              { vehicleNumber: { contains: pagination.search } },
+              { driverName: { contains: pagination.search } },
+              { driverPhone: { contains: pagination.search } },
+              { vehicleType: { contains: pagination.search } },
+              { description: { contains: pagination.search } }
+            ]
+          }
+        : {})
+    }
+
+    const [transports, total] = await Promise.all([
+      prisma.transport.findMany({
+        where,
+        orderBy: { transporterName: 'asc' },
+        ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
+      }),
+      pagination.enabled ? prisma.transport.count({ where }) : Promise.resolve(0)
+    ])
+
+    if (pagination.enabled) {
+      return NextResponse.json({
+        data: transports,
+        meta: buildPaginationMeta(total, pagination)
+      })
+    }
+
     return NextResponse.json(transports)
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Internal server error' }, { status: 500 })
@@ -114,6 +149,8 @@ export async function POST(request: NextRequest) {
         vehicleNumber: cleanString(parsed.data.vehicleNumber),
         driverName: cleanString(parsed.data.driverName),
         driverPhone,
+        vehicleType: cleanString(parsed.data.vehicleType),
+        description: cleanString(parsed.data.description),
         capacity,
         freightRate,
         isActive: parsed.data.isActive !== false
@@ -166,6 +203,8 @@ export async function PUT(request: NextRequest) {
         vehicleNumber: cleanString(parsed.data.vehicleNumber),
         driverName: cleanString(parsed.data.driverName),
         driverPhone,
+        vehicleType: cleanString(parsed.data.vehicleType),
+        description: cleanString(parsed.data.description),
         capacity,
         freightRate,
         isActive: parsed.data.isActive

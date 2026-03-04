@@ -1,6 +1,7 @@
 'use client'
+/* eslint-disable react-hooks/set-state-in-effect */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +12,10 @@ import DashboardLayout from '@/app/components/DashboardLayout'
 import { kgToQuintal, round4, toKg } from '@/lib/unit-conversion'
 import { getCompanyIdFromSearch, resolveCompanyId } from '@/lib/company-context'
 import { isAbortError } from '@/lib/http'
+import {
+  clearDefaultPurchaseProductId,
+  getDefaultPurchaseProductId
+} from '@/lib/default-product'
 
 interface Product {
   id: string
@@ -22,6 +27,11 @@ interface Supplier {
   name: string
   address: string
   phone1: string
+  phone2?: string | null
+  gstNumber?: string | null
+  ifscCode?: string | null
+  bankName?: string | null
+  accountNo?: string | null
 }
 
 interface UserUnit {
@@ -45,7 +55,13 @@ export default function SpecialPurchaseEntryPage() {
   const [supplierName, setSupplierName] = useState('')
   const [supplierAddress, setSupplierAddress] = useState('')
   const [supplierContact, setSupplierContact] = useState('')
+  const [supplierContact2, setSupplierContact2] = useState('')
+  const [supplierGstNumber, setSupplierGstNumber] = useState('')
+  const [supplierIfscCode, setSupplierIfscCode] = useState('')
+  const [supplierBankName, setSupplierBankName] = useState('')
+  const [supplierAccountNo, setSupplierAccountNo] = useState('')
   const [selectedProduct, setSelectedProduct] = useState('')
+  const [defaultProductId, setDefaultProductIdState] = useState('')
   const [selectedUserUnit, setSelectedUserUnit] = useState('')
   const [noOfBags, setNoOfBags] = useState('')
   const [weight, setWeight] = useState('')
@@ -55,6 +71,7 @@ export default function SpecialPurchaseEntryPage() {
   const [grossAmount, setGrossAmount] = useState('')
   const [paidAmount, setPaidAmount] = useState('')
   const [balance, setBalance] = useState('')
+  const [paidAmountError, setPaidAmountError] = useState('')
   const toNonNegative = (value: string) => {
     if (value === '') return ''
     const parsed = Number(value)
@@ -62,13 +79,29 @@ export default function SpecialPurchaseEntryPage() {
     return String(Math.max(0, parsed))
   }
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void fetchData(controller.signal)
-    return () => controller.abort()
-  }, [])
+  const handlePaidAmountChange = (value: string) => {
+    const normalized = toNonNegative(value)
+    if (normalized === '') {
+      setPaidAmount('')
+      setPaidAmountError('')
+      return
+    }
 
-  const fetchData = async (signal?: AbortSignal) => {
+    const nextPaid = Number(normalized)
+    const maxGross = Number(grossAmount || 0)
+    const hasGross = grossAmount !== ''
+
+    if (hasGross && nextPaid > maxGross) {
+      setPaidAmount(String(maxGross))
+      setPaidAmountError('Paid amount cannot be greater than gross amount')
+      return
+    }
+
+    setPaidAmount(normalized)
+    setPaidAmountError('')
+  }
+
+  const fetchData = useCallback(async () => {
     try {
       const companyId = await resolveCompanyId(window.location.search)
       if (!companyId) {
@@ -79,16 +112,28 @@ export default function SpecialPurchaseEntryPage() {
       }
 
       const [productsRes, suppliersRes, unitsRes] = await Promise.all([
-        fetch(`/api/products?companyId=${companyId}`, { signal }),
-        fetch(`/api/suppliers?companyId=${companyId}`, { signal }),
-        fetch(`/api/units?companyId=${companyId}`, { signal })
+        fetch(`/api/products?companyId=${companyId}`),
+        fetch(`/api/suppliers?companyId=${companyId}`),
+        fetch(`/api/units?companyId=${companyId}`)
       ])
-      if (signal?.aborted) return
 
       const productsData = await productsRes.json().catch(() => [])
       const suppliersData = await suppliersRes.json().catch(() => [])
       const unitsData = await unitsRes.json().catch(() => [])
-      setProducts(Array.isArray(productsData) ? productsData : [])
+      if (Array.isArray(productsData)) {
+        setProducts(productsData)
+        const rememberedDefault = getDefaultPurchaseProductId(companyId)
+        const hasRememberedDefault = productsData.some((item: Product) => item.id === rememberedDefault)
+        if (hasRememberedDefault) {
+          setDefaultProductIdState(rememberedDefault)
+          setSelectedProduct((current) => current || rememberedDefault)
+        } else {
+          clearDefaultPurchaseProductId(companyId)
+          setDefaultProductIdState('')
+        }
+      } else {
+        setProducts([])
+      }
       setSuppliers(Array.isArray(suppliersData) ? suppliersData : [])
       if (Array.isArray(unitsData)) {
         setUserUnits(unitsData)
@@ -104,7 +149,11 @@ export default function SpecialPurchaseEntryPage() {
       console.error('Error fetching data:', error)
       setLoading(false)
     }
-  }
+  }, [router])
+
+  useEffect(() => {
+    void fetchData()
+  }, [fetchData])
 
   useEffect(() => {
     const bags = parseFloat(noOfBags) || 0
@@ -141,13 +190,23 @@ export default function SpecialPurchaseEntryPage() {
 
   // Calculate balance when gross or paid changes
   useEffect(() => {
-    if (grossAmount && paidAmount) {
-      const gross = parseFloat(grossAmount) || 0
-      const paid = parseFloat(paidAmount) || 0
-      setBalance(Math.max(0, gross - paid).toString())
+    const gross = parseFloat(grossAmount) || 0
+    const paid = parseFloat(paidAmount) || 0
+
+    if (grossAmount !== '' && paidAmount && paid > gross) {
+      setPaidAmount(String(gross))
+      setPaidAmountError('Paid amount cannot be greater than gross amount')
+      setBalance('0')
+      return
     } else {
-      setBalance('')
+      setPaidAmountError('')
     }
+
+    if (grossAmount && paidAmount) {
+      setBalance(Math.max(0, gross - paid).toString())
+      return
+    }
+    setBalance('')
   }, [grossAmount, paidAmount])
 
   // Handle supplier selection
@@ -158,10 +217,20 @@ export default function SpecialPurchaseEntryPage() {
       setSupplierName(supplier.name)
       setSupplierAddress(supplier.address || '')
       setSupplierContact(supplier.phone1 || '')
+      setSupplierContact2(supplier.phone2 || '')
+      setSupplierGstNumber(supplier.gstNumber || '')
+      setSupplierIfscCode(supplier.ifscCode || '')
+      setSupplierBankName(supplier.bankName || '')
+      setSupplierAccountNo(supplier.accountNo || '')
     } else {
       setSupplierName('')
       setSupplierAddress('')
       setSupplierContact('')
+      setSupplierContact2('')
+      setSupplierGstNumber('')
+      setSupplierIfscCode('')
+      setSupplierBankName('')
+      setSupplierAccountNo('')
     }
   }
 
@@ -169,6 +238,14 @@ export default function SpecialPurchaseEntryPage() {
   const handleAddNewSupplier = async () => {
     if (!supplierName) {
       alert('Please enter supplier name')
+      return
+    }
+    if (supplierContact && supplierContact.length !== 10) {
+      alert('Supplier contact must be exactly 10 digits')
+      return
+    }
+    if (supplierContact2 && supplierContact2.length !== 10) {
+      alert('Supplier alternate contact must be exactly 10 digits')
       return
     }
 
@@ -190,6 +267,11 @@ export default function SpecialPurchaseEntryPage() {
           name: supplierName,
           address: supplierAddress,
           phone1: supplierContact,
+          phone2: supplierContact2,
+          gstNumber: supplierGstNumber,
+          ifscCode: supplierIfscCode,
+          bankName: supplierBankName,
+          accountNo: supplierAccountNo,
         }),
       })
 
@@ -205,6 +287,11 @@ export default function SpecialPurchaseEntryPage() {
         setSupplierName(newSupplier.name || '')
         setSupplierAddress(newSupplier.address || '')
         setSupplierContact(newSupplier.phone1 || '')
+        setSupplierContact2(newSupplier.phone2 || '')
+        setSupplierGstNumber(newSupplier.gstNumber || '')
+        setSupplierIfscCode(newSupplier.ifscCode || '')
+        setSupplierBankName(newSupplier.bankName || '')
+        setSupplierAccountNo(newSupplier.accountNo || '')
         alert('Supplier added successfully!')
       } else {
         const error = await response.json()
@@ -228,6 +315,10 @@ export default function SpecialPurchaseEntryPage() {
       alert('Supplier contact must be exactly 10 digits')
       return
     }
+    if (supplierContact2 && supplierContact2.length !== 10) {
+      alert('Supplier alternate contact must be exactly 10 digits')
+      return
+    }
 
     // Payment validation
     const gross = parseFloat(grossAmount) || 0
@@ -239,7 +330,7 @@ export default function SpecialPurchaseEntryPage() {
 
     // Check if paid amount exceeds gross amount
     if (paid > gross) {
-      alert('Paid amount cannot be more than gross amount!')
+      setPaidAmountError('Paid amount cannot be greater than gross amount')
       return
     }
 
@@ -268,6 +359,11 @@ export default function SpecialPurchaseEntryPage() {
         supplierName,
         supplierAddress,
         supplierContact,
+        supplierContact2,
+        supplierGstNumber,
+        supplierIfscCode,
+        supplierBankName,
+        supplierAccountNo,
         productId: selectedProduct,
         noOfBags: Math.max(0, parseFloat(noOfBags) || 0),
         weight: Math.max(0, parseFloat(weight) || 0),
@@ -311,6 +407,7 @@ export default function SpecialPurchaseEntryPage() {
   }
 
   const companyId = getCompanyIdFromSearch(window.location.search)
+  const defaultProductName = products.find((product) => product.id === defaultProductId)?.name || ''
 
   return (
     <DashboardLayout companyId={companyId}>
@@ -373,6 +470,11 @@ export default function SpecialPurchaseEntryPage() {
                           setSupplierName('')
                           setSupplierAddress('')
                           setSupplierContact('')
+                          setSupplierContact2('')
+                          setSupplierGstNumber('')
+                          setSupplierIfscCode('')
+                          setSupplierBankName('')
+                          setSupplierAccountNo('')
                         }}
                       >
                         New
@@ -419,6 +521,63 @@ export default function SpecialPurchaseEntryPage() {
                     />
                   </div>
 
+                  <div>
+                    <Label htmlFor="supplierContact2">Supplier Alt. Contact No.</Label>
+                    <Input
+                      id="supplierContact2"
+                      value={supplierContact2}
+                      maxLength={10}
+                      pattern="[0-9]{10}"
+                      onChange={(e) => setSupplierContact2(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                      placeholder="Enter alternate contact"
+                      disabled={selectedSupplier !== ''}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="supplierGstNumber">Supplier GST Number</Label>
+                    <Input
+                      id="supplierGstNumber"
+                      value={supplierGstNumber}
+                      onChange={(e) => setSupplierGstNumber(e.target.value.toUpperCase())}
+                      placeholder="Enter GST number"
+                      disabled={selectedSupplier !== ''}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="supplierIfscCode">Supplier IFSC Code</Label>
+                    <Input
+                      id="supplierIfscCode"
+                      value={supplierIfscCode}
+                      onChange={(e) => setSupplierIfscCode(e.target.value.toUpperCase())}
+                      placeholder="Enter IFSC code"
+                      disabled={selectedSupplier !== ''}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="supplierBankName">Supplier Bank Name</Label>
+                    <Input
+                      id="supplierBankName"
+                      value={supplierBankName}
+                      onChange={(e) => setSupplierBankName(e.target.value)}
+                      placeholder="Enter bank name"
+                      disabled={selectedSupplier !== ''}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="supplierAccountNo">Supplier Account No.</Label>
+                    <Input
+                      id="supplierAccountNo"
+                      value={supplierAccountNo}
+                      onChange={(e) => setSupplierAccountNo(e.target.value)}
+                      placeholder="Enter account number"
+                      disabled={selectedSupplier !== ''}
+                    />
+                  </div>
+
                   {/* Add New Supplier Button */}
                   {!selectedSupplier && supplierName && (
                     <div className="flex items-end">
@@ -432,7 +591,7 @@ export default function SpecialPurchaseEntryPage() {
                   <div>
                     <Label htmlFor="product">Product</Label>
                     <Select value={selectedProduct} onValueChange={setSelectedProduct}>
-                      <SelectTrigger>
+                      <SelectTrigger className="flex-1">
                         <SelectValue placeholder="Select Product" />
                       </SelectTrigger>
                       <SelectContent>
@@ -443,6 +602,9 @@ export default function SpecialPurchaseEntryPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                    {defaultProductName ? (
+                      <p className="mt-1 text-xs text-slate-600">Default from Product Master: {defaultProductName}</p>
+                    ) : null}
                   </div>
 
                   {/* No. of Bags */}
@@ -550,11 +712,16 @@ export default function SpecialPurchaseEntryPage() {
                       id="paidAmount"
                       type="number"
                       min="0"
+                      max={grossAmount || undefined}
                       step="0.01"
                       value={paidAmount}
-                      onChange={(e) => setPaidAmount(toNonNegative(e.target.value))}
+                      onChange={(e) => handlePaidAmountChange(e.target.value)}
                       placeholder="Enter paid amount"
+                      className={paidAmountError ? 'border-red-500 focus-visible:ring-red-500' : ''}
                     />
+                    {paidAmountError ? (
+                      <p className="mt-1 text-right text-sm text-red-600">{paidAmountError}</p>
+                    ) : null}
                   </div>
 
                   {/* Balance */}

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { cookies } from 'next/headers'
 import { ensureCompanyAccess, parseJsonWithSchema } from '@/lib/api-security'
-import { normalizeTenDigitPhone, parseNonNegativeNumber } from '@/lib/field-validation'
+import { cleanString, normalizeTenDigitPhone, parseNonNegativeNumber } from '@/lib/field-validation'
 
 const writeSchema = z.object({
   id: z.string().optional(),
@@ -13,6 +13,11 @@ const writeSchema = z.object({
   supplierName: z.string().trim().min(1),
   supplierAddress: z.string().optional().nullable(),
   supplierContact: z.string().optional().nullable(),
+  supplierContact2: z.string().optional().nullable(),
+  supplierGstNumber: z.string().optional().nullable(),
+  supplierIfscCode: z.string().optional().nullable(),
+  supplierBankName: z.string().optional().nullable(),
+  supplierAccountNo: z.string().optional().nullable(),
   productId: z.string().trim().min(1),
   noOfBags: z.union([z.number(), z.string()]).optional().nullable(),
   weight: z.union([z.number(), z.string()]),
@@ -37,8 +42,12 @@ export async function POST(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, body.companyId)
     if (denied) return denied
     const supplierPhone = normalizeTenDigitPhone(body.supplierContact)
+    const supplierPhone2 = normalizeTenDigitPhone(body.supplierContact2)
     if (body.supplierContact && !supplierPhone) {
       return NextResponse.json({ error: 'Supplier contact must be exactly 10 digits' }, { status: 400 })
+    }
+    if (body.supplierContact2 && !supplierPhone2) {
+      return NextResponse.json({ error: 'Supplier alternate contact must be exactly 10 digits' }, { status: 400 })
     }
 
     const weight = parseNonNegativeNumber(body.weight)
@@ -71,16 +80,26 @@ export async function POST(request: NextRequest) {
         data: {
           companyId: body.companyId,
           name: body.supplierName,
-          address: body.supplierAddress || null,
+          address: cleanString(body.supplierAddress),
           phone1: supplierPhone,
+          phone2: supplierPhone2,
+          gstNumber: cleanString(body.supplierGstNumber),
+          ifscCode: cleanString(body.supplierIfscCode)?.toUpperCase() || null,
+          bankName: cleanString(body.supplierBankName),
+          accountNo: cleanString(body.supplierAccountNo),
         },
       })
     } else {
       supplier = await prisma.supplier.update({
         where: { id: supplier.id },
         data: {
-          address: body.supplierAddress || supplier.address,
+          address: cleanString(body.supplierAddress) ?? supplier.address,
           phone1: supplierPhone || supplier.phone1,
+          phone2: supplierPhone2 || supplier.phone2,
+          gstNumber: cleanString(body.supplierGstNumber) ?? supplier.gstNumber,
+          ifscCode: cleanString(body.supplierIfscCode)?.toUpperCase() ?? supplier.ifscCode,
+          bankName: cleanString(body.supplierBankName) ?? supplier.bankName,
+          accountNo: cleanString(body.supplierAccountNo) ?? supplier.accountNo,
         },
       })
     }
@@ -222,8 +241,12 @@ export async function PUT(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, body.companyId)
     if (denied) return denied
     const supplierPhone = normalizeTenDigitPhone(body.supplierContact)
+    const supplierPhone2 = normalizeTenDigitPhone(body.supplierContact2)
     if (body.supplierContact && !supplierPhone) {
       return NextResponse.json({ error: 'Supplier contact must be exactly 10 digits' }, { status: 400 })
+    }
+    if (body.supplierContact2 && !supplierPhone2) {
+      return NextResponse.json({ error: 'Supplier alternate contact must be exactly 10 digits' }, { status: 400 })
     }
 
     const weight = parseNonNegativeNumber(body.weight)
@@ -256,16 +279,26 @@ export async function PUT(request: NextRequest) {
         data: {
           companyId: body.companyId,
           name: body.supplierName,
-          address: body.supplierAddress || null,
+          address: cleanString(body.supplierAddress),
           phone1: supplierPhone,
+          phone2: supplierPhone2,
+          gstNumber: cleanString(body.supplierGstNumber),
+          ifscCode: cleanString(body.supplierIfscCode)?.toUpperCase() || null,
+          bankName: cleanString(body.supplierBankName),
+          accountNo: cleanString(body.supplierAccountNo),
         },
       })
     } else {
       supplier = await prisma.supplier.update({
         where: { id: supplier.id },
         data: {
-          address: body.supplierAddress || supplier.address,
+          address: cleanString(body.supplierAddress) ?? supplier.address,
           phone1: supplierPhone || supplier.phone1,
+          phone2: supplierPhone2 || supplier.phone2,
+          gstNumber: cleanString(body.supplierGstNumber) ?? supplier.gstNumber,
+          ifscCode: cleanString(body.supplierIfscCode)?.toUpperCase() ?? supplier.ifscCode,
+          bankName: cleanString(body.supplierBankName) ?? supplier.bankName,
+          accountNo: cleanString(body.supplierAccountNo) ?? supplier.accountNo,
         },
       })
     }

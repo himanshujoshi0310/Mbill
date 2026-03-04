@@ -205,28 +205,6 @@ export default function PartyMasterPage() {
     }
   }
 
-  const handleAddDummyData = async () => {
-    if (!companyId) return
-
-    try {
-      const response = await fetch(`/api/parties?companyId=${companyId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seed: true })
-      })
-      const result = await response.json()
-      if (!response.ok) {
-        setMessage({ type: 'error', text: result.error || 'Failed to add dummy data' })
-        return
-      }
-      setMessage({ type: 'success', text: result.message || 'Dummy data added successfully' })
-      fetchParties()
-    } catch (error) {
-      console.error('Dummy data add failed:', error)
-      setMessage({ type: 'error', text: 'Failed to add dummy data' })
-    }
-  }
-
   const handleExportCsv = () => {
     if (filteredParties.length === 0) {
       setMessage({ type: 'error', text: 'No party data available to export' })
@@ -307,7 +285,6 @@ export default function PartyMasterPage() {
             </div>
             <div className="flex gap-2">
               <Button onClick={handleExportCsv} variant="outline">Export CSV</Button>
-              <Button onClick={handleAddDummyData} variant="outline">Add Dummy Data</Button>
               <Button onClick={handleDeleteAll} variant="destructive">Delete All</Button>
               <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
                 <Plus className="h-4 w-4" />
