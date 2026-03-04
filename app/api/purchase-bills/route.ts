@@ -39,6 +39,35 @@ function parseRequiredNonNegative(value: unknown, label: string): number | NextR
   return num
 }
 
+function clampNonNegative(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
+function sanitizePurchaseBill<T extends {
+  totalAmount?: unknown
+  paidAmount?: unknown
+  balanceAmount?: unknown
+  purchaseItems?: Array<{ qty?: unknown; rate?: unknown; hammali?: unknown; amount?: unknown }>
+}>(bill: T): T {
+  return {
+    ...bill,
+    totalAmount: clampNonNegative(bill.totalAmount),
+    paidAmount: clampNonNegative(bill.paidAmount),
+    balanceAmount: clampNonNegative(bill.balanceAmount),
+    purchaseItems: Array.isArray(bill.purchaseItems)
+      ? bill.purchaseItems.map((item) => ({
+          ...item,
+          qty: clampNonNegative(item.qty),
+          rate: clampNonNegative(item.rate),
+          hammali: clampNonNegative(item.hammali),
+          amount: clampNonNegative(item.amount)
+        }))
+      : bill.purchaseItems
+  } as T
+}
+
 export async function POST(request: NextRequest) {
   try {
     const parsed = await parseJsonWithSchema(request, purchaseCreateSchema)
@@ -196,7 +225,7 @@ export async function GET(request: NextRequest) {
       if (!purchaseBill) {
         return NextResponse.json({ error: 'Purchase bill not found' }, { status: 404 })
       }
-      return NextResponse.json(purchaseBill)
+      return NextResponse.json(sanitizePurchaseBill(purchaseBill))
     }
 
     if (last === 'true') {
@@ -248,14 +277,16 @@ export async function GET(request: NextRequest) {
       pagination.enabled ? prisma.purchaseBill.count({ where: whereClause }) : Promise.resolve(0)
     ])
 
+    const safePurchaseBills = purchaseBills.map((bill) => sanitizePurchaseBill(bill))
+
     if (pagination.enabled) {
       return NextResponse.json({
-        data: purchaseBills,
+        data: safePurchaseBills,
         meta: buildPaginationMeta(total, pagination)
       })
     }
 
-    return NextResponse.json(purchaseBills)
+    return NextResponse.json(safePurchaseBills)
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

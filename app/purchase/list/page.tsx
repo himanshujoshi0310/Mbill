@@ -73,6 +73,12 @@ interface SpecialPurchaseBill {
 
 type PurchaseBill = RegularPurchaseBill | SpecialPurchaseBill
 
+const clampNonNegative = (value: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 function parseDateOrNull(value: string): Date | null {
   if (!value) return null
   const parsed = new Date(value)
@@ -168,8 +174,40 @@ export default function PurchaseListPage() {
       const specialData = Array.isArray(specialRaw) ? specialRaw : []
 
       // Add type field to distinguish between regular and special purchases
-      const regularBills = regularData.map((bill: any) => ({ ...bill, type: 'regular' as const }))
-      const specialBills = specialData.map((bill: any) => ({ ...bill, type: 'special' as const }))
+      const regularBills = regularData.map((bill: any) => ({
+        ...bill,
+        totalAmount: clampNonNegative(Number(bill?.totalAmount || 0)),
+        paidAmount: clampNonNegative(Number(bill?.paidAmount || 0)),
+        balanceAmount: clampNonNegative(Number(bill?.balanceAmount || 0)),
+        purchaseItems: Array.isArray(bill?.purchaseItems)
+          ? bill.purchaseItems.map((item: any) => ({
+              ...item,
+              qty: clampNonNegative(Number(item?.qty || 0)),
+              rate: clampNonNegative(Number(item?.rate || 0)),
+              hammali: clampNonNegative(Number(item?.hammali || 0)),
+              amount: clampNonNegative(Number(item?.amount || 0))
+            }))
+          : [],
+        type: 'regular' as const
+      }))
+      const specialBills = specialData.map((bill: any) => ({
+        ...bill,
+        totalAmount: clampNonNegative(Number(bill?.totalAmount || 0)),
+        paidAmount: clampNonNegative(Number(bill?.paidAmount || 0)),
+        balanceAmount: clampNonNegative(Number(bill?.balanceAmount || 0)),
+        specialPurchaseItems: Array.isArray(bill?.specialPurchaseItems)
+          ? bill.specialPurchaseItems.map((item: any) => ({
+              ...item,
+              noOfBags: clampNonNegative(Number(item?.noOfBags || 0)),
+              weight: clampNonNegative(Number(item?.weight || 0)),
+              rate: clampNonNegative(Number(item?.rate || 0)),
+              netAmount: clampNonNegative(Number(item?.netAmount || 0)),
+              otherAmount: clampNonNegative(Number(item?.otherAmount || 0)),
+              grossAmount: clampNonNegative(Number(item?.grossAmount || 0))
+            }))
+          : [],
+        type: 'special' as const
+      }))
 
       // Combine both arrays and sort by date (newest first)
       const allBills = [...regularBills, ...specialBills].sort((a, b) => 

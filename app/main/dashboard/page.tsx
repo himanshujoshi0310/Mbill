@@ -111,6 +111,12 @@ const emptyData: DashboardData = {
   stockLedger: []
 }
 
+const clampNonNegative = (value: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 export default function MainDashboardPage() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
@@ -320,16 +326,16 @@ function MainDashboardPageContent() {
   }
 
   const purchaseStats = useMemo(() => {
-    const total = data.purchaseBills.reduce((sum, bill) => sum + Number(bill.totalAmount || 0), 0)
-    const paid = data.purchaseBills.reduce((sum, bill) => sum + Number(bill.paidAmount || 0), 0)
-    const pending = data.purchaseBills.reduce((sum, bill) => sum + Number(bill.balanceAmount || 0), 0)
+    const total = data.purchaseBills.reduce((sum, bill) => sum + clampNonNegative(Number(bill.totalAmount || 0)), 0)
+    const paid = data.purchaseBills.reduce((sum, bill) => sum + clampNonNegative(Number(bill.paidAmount || 0)), 0)
+    const pending = data.purchaseBills.reduce((sum, bill) => sum + clampNonNegative(Number(bill.balanceAmount || 0)), 0)
     return { total, paid, pending, count: data.purchaseBills.length }
   }, [data.purchaseBills])
 
   const salesStats = useMemo(() => {
-    const total = data.salesBills.reduce((sum, bill) => sum + Number(bill.totalAmount || 0), 0)
-    const received = data.salesBills.reduce((sum, bill) => sum + Number(bill.receivedAmount || 0), 0)
-    const pending = data.salesBills.reduce((sum, bill) => sum + Number(bill.balanceAmount || 0), 0)
+    const total = data.salesBills.reduce((sum, bill) => sum + clampNonNegative(Number(bill.totalAmount || 0)), 0)
+    const received = data.salesBills.reduce((sum, bill) => sum + clampNonNegative(Number(bill.receivedAmount || 0)), 0)
+    const pending = data.salesBills.reduce((sum, bill) => sum + clampNonNegative(Number(bill.balanceAmount || 0)), 0)
     return { total, received, pending, count: data.salesBills.length }
   }, [data.salesBills])
 
@@ -341,9 +347,9 @@ function MainDashboardPageContent() {
       .filter((item) => item.billType === 'purchase')
       .reduce((sum, item) => sum + Number(item.amount || 0), 0)
     return {
-      inAmount,
-      outAmount,
-      net: inAmount - outAmount
+      inAmount: clampNonNegative(inAmount),
+      outAmount: clampNonNegative(outAmount),
+      net: clampNonNegative(inAmount - outAmount)
     }
   }, [data.payments])
 
@@ -364,7 +370,7 @@ function MainDashboardPageContent() {
       no: bill.billNo,
       name: bill.farmer?.name || 'Farmer',
       companyName: companyNameMap.get(bill.companyId || '') || 'Unknown Company',
-      amount: Number(bill.totalAmount || 0),
+      amount: clampNonNegative(Number(bill.totalAmount || 0)),
       date: new Date(bill.billDate)
     }))
 
@@ -374,7 +380,7 @@ function MainDashboardPageContent() {
       no: bill.billNo,
       name: bill.party?.name || 'Party',
       companyName: companyNameMap.get(bill.companyId || '') || 'Unknown Company',
-      amount: Number(bill.totalAmount || 0),
+      amount: clampNonNegative(Number(bill.totalAmount || 0)),
       date: new Date(bill.billDate)
     }))
 
@@ -395,7 +401,7 @@ function MainDashboardPageContent() {
       {
         label: 'Net Cash Flow',
         value: `₹${cashflow.net.toFixed(2)}`,
-        hint: `${cashflow.net >= 0 ? 'Positive' : 'Negative'} movement`,
+        hint: cashflow.net > 0 ? 'Positive movement' : 'Balanced movement',
         icon: Wallet,
         className: 'border-slate-200 bg-white'
       },
@@ -462,14 +468,18 @@ function MainDashboardPageContent() {
       const id = payment.companyId || ''
       const row = map.get(id)
       if (!row) return
-      if (payment.billType === 'sales') row.paymentIn += Number(payment.amount || 0)
-      if (payment.billType === 'purchase') row.paymentOut += Number(payment.amount || 0)
+      if (payment.billType === 'sales') row.paymentIn += clampNonNegative(Number(payment.amount || 0))
+      if (payment.billType === 'purchase') row.paymentOut += clampNonNegative(Number(payment.amount || 0))
     })
 
     return Array.from(map.values())
       .map((row) => ({
         ...row,
-        cashflow: row.paymentIn - row.paymentOut
+        purchaseTotal: clampNonNegative(row.purchaseTotal),
+        salesTotal: clampNonNegative(row.salesTotal),
+        paymentIn: clampNonNegative(row.paymentIn),
+        paymentOut: clampNonNegative(row.paymentOut),
+        cashflow: clampNonNegative(row.paymentIn - row.paymentOut)
       }))
       .sort((a, b) => b.salesTotal - a.salesTotal)
   }, [companies, data.payments, data.purchaseBills, data.salesBills, selectedCompanyIds])
@@ -584,7 +594,7 @@ function MainDashboardPageContent() {
       ['Primary Company', companies.find((item) => item.id === primaryCompanyId)?.name || primaryCompanyId || 'None'],
       ['Total Purchase', purchaseStats.total.toFixed(2)],
       ['Total Sales', salesStats.total.toFixed(2)],
-      ['Net Cashflow', cashflow.net.toFixed(2)],
+      ['Net Cashflow', clampNonNegative(cashflow.net).toFixed(2)],
       ['Products', data.products.length],
       ['Parties', data.parties.length],
       ['Units', data.units.length],
@@ -734,12 +744,12 @@ function MainDashboardPageContent() {
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-xs text-slate-500">Top Trading Company</p>
                   <p className="text-sm font-semibold text-slate-900">{topCompany?.name || 'N/A'}</p>
-                  <p className="text-xs text-slate-600">Sales ₹{(topCompany?.salesTotal || 0).toFixed(2)}</p>
+                  <p className="text-xs text-slate-600">Sales ₹{clampNonNegative(topCompany?.salesTotal || 0).toFixed(2)}</p>
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-xs text-slate-500">Best Cash Position</p>
                   <p className="text-sm font-semibold text-slate-900">{topGrowthCompany?.name || 'N/A'}</p>
-                  <p className="text-xs text-emerald-700">Cashflow ₹{(topGrowthCompany?.cashflow || 0).toFixed(2)}</p>
+                  <p className="text-xs text-emerald-700">Cashflow ₹{clampNonNegative(topGrowthCompany?.cashflow || 0).toFixed(2)}</p>
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-xs text-slate-500">Risk Snapshot</p>
@@ -756,7 +766,7 @@ function MainDashboardPageContent() {
                 {companyPerformance.slice(0, 4).map((row) => (
                   <div key={row.id} className="rounded-md border p-2">
                     <p className="truncate text-sm font-medium">{row.name}</p>
-                    <p className="text-xs text-slate-500">Sales ₹{row.salesTotal.toFixed(0)} | Bills {row.purchaseBills + row.salesBills}</p>
+                    <p className="text-xs text-slate-500">Sales ₹{clampNonNegative(row.salesTotal).toFixed(0)} | Bills {row.purchaseBills + row.salesBills}</p>
                   </div>
                 ))}
                 {companyPerformance.length === 0 && <p className="text-sm text-slate-500">No company data yet</p>}
@@ -997,7 +1007,7 @@ function MainDashboardPageContent() {
                   <Eye className="w-4 h-4 mr-2" />
                   View All Bills
                 </Button>
-                <Button variant="outline" onClick={() => handleNavigation('/purchase')}>
+                <Button variant="outline" onClick={() => handleNavigation('/purchase/list')}>
                   <ShoppingCart className="w-4 h-4 mr-2" />
                   Purchase Module
                 </Button>
@@ -1024,7 +1034,7 @@ function MainDashboardPageContent() {
                           <TableCell className="font-medium">{bill.billNo}</TableCell>
                           <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
                           <TableCell>{bill.farmer?.name || '-'}</TableCell>
-                          <TableCell>₹{Number(bill.totalAmount || 0).toFixed(2)}</TableCell>
+                          <TableCell>₹{clampNonNegative(Number(bill.totalAmount || 0)).toFixed(2)}</TableCell>
                           <TableCell>
                             <Badge variant={bill.balanceAmount > 0 ? 'destructive' : 'default'}>
                               {bill.balanceAmount > 0 ? 'Pending' : 'Paid'}
@@ -1085,7 +1095,7 @@ function MainDashboardPageContent() {
                   <Eye className="w-4 h-4 mr-2" />
                   View All Bills
                 </Button>
-                <Button variant="outline" onClick={() => handleNavigation('/sales')}>
+                <Button variant="outline" onClick={() => handleNavigation('/sales/list')}>
                   <Receipt className="w-4 h-4 mr-2" />
                   Sales Module
                 </Button>
@@ -1112,7 +1122,7 @@ function MainDashboardPageContent() {
                           <TableCell className="font-medium">{bill.billNo}</TableCell>
                           <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
                           <TableCell>{bill.party?.name || '-'}</TableCell>
-                          <TableCell>₹{Number(bill.totalAmount || 0).toFixed(2)}</TableCell>
+                          <TableCell>₹{clampNonNegative(Number(bill.totalAmount || 0)).toFixed(2)}</TableCell>
                           <TableCell>
                             <Badge variant={bill.balanceAmount > 0 ? 'destructive' : 'default'}>
                               {bill.balanceAmount > 0 ? 'Pending' : 'Received'}

@@ -3,6 +3,11 @@ import { prisma } from '@/lib/prisma'
 import * as XLSX from 'xlsx'
 import { ensureCompanyAccess } from '@/lib/api-security'
 
+const clampNonNegative = (value: number): number => {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, value)
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
@@ -81,6 +86,15 @@ export async function POST(request: NextRequest) {
         }
 
         lastBillNumber++
+
+        const weight = clampNonNegative(parseFloat(row['Weight']) || 0)
+        const rate = clampNonNegative(parseFloat(row['Rate']) || 0)
+        const hammali = clampNonNegative(parseFloat(row['Hammali']) || 0)
+        const payableAmount = clampNonNegative((parseFloat(row['Payable Amount']) || (weight * rate) - hammali))
+        const paidAmount = clampNonNegative(parseFloat(row['Paid Amount']) || 0)
+        const safePaidAmount = Math.min(payableAmount, paidAmount)
+        const balanceAmount = clampNonNegative(payableAmount - safePaidAmount)
+        const status = safePaidAmount <= 0 ? 'unpaid' : balanceAmount === 0 ? 'paid' : 'partial'
         
         const purchaseBill = await prisma.purchaseBill.create({
           data: {
@@ -88,10 +102,10 @@ export async function POST(request: NextRequest) {
             billNo: lastBillNumber.toString(),
             billDate: row['Bill Date'] ? new Date(row['Bill Date']).toISOString() : new Date().toISOString(),
             farmerId: farmer.id,
-            totalAmount: parseFloat(row['Payable Amount']) || (parseFloat(row['Weight']) * parseFloat(row['Rate'])) - (parseFloat(row['Hammali']) || 0),
-            paidAmount: parseFloat(row['Paid Amount']) || 0,
-            balanceAmount: (parseFloat(row['Payable Amount']) || (parseFloat(row['Weight']) * parseFloat(row['Rate'])) - (parseFloat(row['Hammali']) || 0)) - (parseFloat(row['Paid Amount']) || 0),
-            status: parseFloat(row['Paid Amount']) > 0 ? (parseFloat(row['Paid Amount']) >= (parseFloat(row['Payable Amount']) || (parseFloat(row['Weight']) * parseFloat(row['Rate'])) - (parseFloat(row['Hammali']) || 0)) ? 'paid' : 'partial') : 'unpaid'
+            totalAmount: payableAmount,
+            paidAmount: safePaidAmount,
+            balanceAmount,
+            status
           }
         })
 

@@ -70,6 +70,29 @@ function extractBillSequence(billNo: string): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function sanitizeSalesBill<T extends {
+  totalAmount?: unknown
+  receivedAmount?: unknown
+  balanceAmount?: unknown
+  salesItems?: Array<{ qty?: unknown; weight?: unknown; rate?: unknown; amount?: unknown }>
+}>(bill: T): T {
+  return {
+    ...bill,
+    totalAmount: toNonNegativeNumber(bill.totalAmount, 0),
+    receivedAmount: toNonNegativeNumber(bill.receivedAmount, 0),
+    balanceAmount: toNonNegativeNumber(bill.balanceAmount, 0),
+    salesItems: Array.isArray(bill.salesItems)
+      ? bill.salesItems.map((item) => ({
+          ...item,
+          qty: toNonNegativeNumber(item.qty, 0),
+          weight: toNonNegativeNumber(item.weight, 0),
+          rate: toNonNegativeNumber(item.rate, 0),
+          amount: toNonNegativeNumber(item.amount, 0)
+        }))
+      : bill.salesItems
+  } as T
+}
+
 export async function POST(request: NextRequest) {
   try {
     const parsed = await parseJsonWithSchema(request, salesCreateSchema)
@@ -242,7 +265,7 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: 'Sales bill not found' }, { status: 404 })
       }
 
-      return NextResponse.json(bill)
+      return NextResponse.json(sanitizeSalesBill(bill))
     }
 
     const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
@@ -275,14 +298,16 @@ export async function GET(request: NextRequest) {
       pagination.enabled ? prisma.salesBill.count({ where: whereClause }) : Promise.resolve(0)
     ])
 
+    const safeSalesBills = salesBills.map((bill) => sanitizeSalesBill(bill))
+
     if (pagination.enabled) {
       return NextResponse.json({
-        data: salesBills,
+        data: safeSalesBills,
         meta: buildPaginationMeta(total, pagination)
       })
     }
 
-    return NextResponse.json(salesBills)
+    return NextResponse.json(safeSalesBills)
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

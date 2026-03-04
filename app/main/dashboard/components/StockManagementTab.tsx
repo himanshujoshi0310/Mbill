@@ -157,7 +157,7 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
   }
 
   const handleViewHistory = (productId: string) => {
-    router.push(`/stock/history?productId=${productId}&companyId=${companyId}`)
+    router.push(`/stock/dashboard?companyId=${companyId}&productId=${productId}`)
   }
 
   if (loading) {
@@ -361,10 +361,10 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
                       </Badge>
                     </TableCell>
                     <TableCell className="text-green-600">
-                      {entry.qtyIn > 0 ? entry.qtyIn.toFixed(2) : '-'}
+                      {entry.qtyIn > 0 ? entry.qtyIn.toFixed(2) : '0.00'}
                     </TableCell>
                     <TableCell className="text-red-600">
-                      {entry.qtyOut > 0 ? entry.qtyOut.toFixed(2) : '-'}
+                      {entry.qtyOut > 0 ? entry.qtyOut.toFixed(2) : '0.00'}
                     </TableCell>
                     <TableCell>{entry.refTable.replace('_', ' ')}</TableCell>
                   </TableRow>

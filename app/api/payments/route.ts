@@ -27,6 +27,12 @@ const paymentCreateSchema = z
   })
   .strict()
 
+const clampNonNegative = (value: unknown): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 export async function POST(request: NextRequest) {
   const authResult = requireRoles(request, ['super_admin', 'trader_admin', 'company_admin', 'company_user'])
   if (!authResult.ok) return authResult.response
@@ -250,6 +256,7 @@ export async function GET(request: NextRequest) {
 
     const enhancedPayments = payments.map((payment) => ({
       ...payment,
+      amount: clampNonNegative(payment.amount),
       billNo:
         payment.billType === 'purchase'
           ? purchaseBillMap.get(payment.billId) || ''

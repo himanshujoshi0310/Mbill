@@ -62,6 +62,12 @@ interface Payment {
   createdAt: string
 }
 
+const clampNonNegative = (value: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 export default function PaymentPage() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
@@ -117,9 +123,32 @@ function PaymentPageContent() {
       const salesData = await salesRes.json()
       const paymentsData = await paymentsRes.json()
       
-      setPurchaseBills(Array.isArray(purchaseData) ? purchaseData : [])
-      setSalesBills(Array.isArray(salesData) ? salesData : [])
-      setPayments(Array.isArray(paymentsData) ? paymentsData : [])
+      const safePurchaseBills = Array.isArray(purchaseData)
+        ? purchaseData.map((bill: PurchaseBill) => ({
+            ...bill,
+            totalAmount: clampNonNegative(bill.totalAmount),
+            paidAmount: clampNonNegative(bill.paidAmount),
+            balanceAmount: clampNonNegative(bill.balanceAmount)
+          }))
+        : []
+      const safeSalesBills = Array.isArray(salesData)
+        ? salesData.map((bill: SalesBill) => ({
+            ...bill,
+            totalAmount: clampNonNegative(bill.totalAmount),
+            receivedAmount: clampNonNegative(bill.receivedAmount),
+            balanceAmount: clampNonNegative(bill.balanceAmount)
+          }))
+        : []
+      const safePayments = Array.isArray(paymentsData)
+        ? paymentsData.map((payment: Payment) => ({
+            ...payment,
+            amount: clampNonNegative(payment.amount)
+          }))
+        : []
+
+      setPurchaseBills(safePurchaseBills)
+      setSalesBills(safeSalesBills)
+      setPayments(safePayments)
       
       setLoading(false)
     } catch (error) {
@@ -155,23 +184,23 @@ function PaymentPageContent() {
   }
 
   const getPurchaseStats = () => ({
-    total: purchaseBills.reduce((sum, bill) => sum + bill.totalAmount, 0),
-    paid: purchaseBills.reduce((sum, bill) => sum + bill.paidAmount, 0),
-    pending: purchaseBills.reduce((sum, bill) => sum + bill.balanceAmount, 0),
+    total: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.totalAmount), 0),
+    paid: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.paidAmount), 0),
+    pending: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.balanceAmount), 0),
     count: purchaseBills.length
   })
 
   const getSalesStats = () => ({
-    total: salesBills.reduce((sum, bill) => sum + bill.totalAmount, 0),
-    received: salesBills.reduce((sum, bill) => sum + bill.receivedAmount, 0),
-    pending: salesBills.reduce((sum, bill) => sum + bill.balanceAmount, 0),
+    total: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.totalAmount), 0),
+    received: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.receivedAmount), 0),
+    pending: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.balanceAmount), 0),
     count: salesBills.length
   })
 
   const getPaymentStats = () => ({
-    totalPayments: payments.reduce((sum, payment) => sum + payment.amount, 0),
-    purchasePayments: payments.filter(p => p.billType === 'purchase').reduce((sum, p) => sum + p.amount, 0),
-    salesReceipts: payments.filter(p => p.billType === 'sales').reduce((sum, p) => sum + p.amount, 0),
+    totalPayments: payments.reduce((sum, payment) => sum + clampNonNegative(payment.amount), 0),
+    purchasePayments: payments.filter(p => p.billType === 'purchase').reduce((sum, p) => sum + clampNonNegative(p.amount), 0),
+    salesReceipts: payments.filter(p => p.billType === 'sales').reduce((sum, p) => sum + clampNonNegative(p.amount), 0),
     count: payments.length
   })
 
@@ -304,14 +333,14 @@ function PaymentPageContent() {
                             : (bill as SalesBill).party.name
                           }
                         </TableCell>
-                        <TableCell>₹{bill.totalAmount.toFixed(2)}</TableCell>
+                        <TableCell>₹{clampNonNegative(bill.totalAmount).toFixed(2)}</TableCell>
                         <TableCell>
                           ₹{(activeTab === 'purchase' 
-                            ? (bill as PurchaseBill).paidAmount 
-                            : (bill as SalesBill).receivedAmount
+                            ? clampNonNegative((bill as PurchaseBill).paidAmount)
+                            : clampNonNegative((bill as SalesBill).receivedAmount)
                           ).toFixed(2)}
                         </TableCell>
-                        <TableCell>₹{bill.balanceAmount.toFixed(2)}</TableCell>
+                        <TableCell>₹{clampNonNegative(bill.balanceAmount).toFixed(2)}</TableCell>
                         <TableCell>
                           <Badge variant={
                             bill.status === 'paid' ? 'default' :
@@ -325,7 +354,7 @@ function PaymentPageContent() {
                             <Button
                               size="sm"
                               onClick={() => handleMakePayment(bill.id, activeTab)}
-                              disabled={bill.balanceAmount === 0}
+                              disabled={clampNonNegative(bill.balanceAmount) === 0}
                             >
                               <Plus className="w-4 h-4 mr-1" />
                               Pay
@@ -413,7 +442,7 @@ function PaymentPageContent() {
                         </TableCell>
                         <TableCell>{payment.billNo}</TableCell>
                         <TableCell>{payment.partyName}</TableCell>
-                        <TableCell>₹{payment.amount.toFixed(2)}</TableCell>
+                        <TableCell>₹{clampNonNegative(payment.amount).toFixed(2)}</TableCell>
                         <TableCell>
                           <Badge variant="outline">{payment.mode}</Badge>
                         </TableCell>

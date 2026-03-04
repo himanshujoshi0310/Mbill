@@ -47,6 +47,12 @@ interface StockSummary {
   closingStock: number
 }
 
+const clampNonNegative = (value: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 export default function StockDashboardPage() {
   const router = useRouter()
   const [products, setProducts] = useState<Product[]>([])
@@ -85,6 +91,10 @@ export default function StockDashboardPage() {
       }
 
       setCompanyId(companyIdParam)
+      const productIdParam = new URLSearchParams(window.location.search).get('productId')?.trim() || ''
+      if (productIdParam) {
+        setFilterProduct(productIdParam)
+      }
 
       const cacheKey = `stock-dashboard:${companyIdParam}`
       const cached = getClientCache<{ products: Product[]; stockLedger: StockLedger[] }>(cacheKey, 15_000)
@@ -157,7 +167,7 @@ export default function StockDashboardPage() {
 
     // Calculate closing stock
     Object.keys(summary).forEach(productId => {
-      summary[productId].closingStock = summary[productId].totalIn - summary[productId].totalOut
+      summary[productId].closingStock = clampNonNegative(summary[productId].totalIn - summary[productId].totalOut)
     })
 
     return Object.values(summary)
@@ -211,11 +221,11 @@ export default function StockDashboardPage() {
   const filteredLedger = useMemo(() => {
     let filtered = stockLedger
 
-    if (filterProduct) {
+    if (filterProduct && filterProduct !== 'all') {
       filtered = filtered.filter(entry => entry.product.id === filterProduct)
     }
 
-    if (filterType) {
+    if (filterType && filterType !== 'all') {
       filtered = filtered.filter(entry => entry.type === filterType)
     }
 
@@ -231,7 +241,7 @@ export default function StockDashboardPage() {
   }, [stockLedger, filterProduct, filterType, dateFrom, dateTo])
 
   const totalStockValue = useMemo(
-    () => stockSummary.reduce((sum, stock) => sum + stock.closingStock, 0),
+    () => stockSummary.reduce((sum, stock) => sum + clampNonNegative(stock.closingStock), 0),
     [stockSummary]
   )
   const lowStockProducts = useMemo(
@@ -328,25 +338,25 @@ export default function StockDashboardPage() {
                         <TableCell>{stock.productUnit}</TableCell>
                         <TableCell className="text-green-600">
                           <TrendingUp className="inline w-4 h-4 mr-1" />
-                          {stock.totalIn.toFixed(2)}
+                          {clampNonNegative(stock.totalIn).toFixed(2)}
                         </TableCell>
                         <TableCell className="text-red-600">
                           <TrendingDown className="inline w-4 h-4 mr-1" />
-                          {stock.totalOut.toFixed(2)}
+                          {clampNonNegative(stock.totalOut).toFixed(2)}
                         </TableCell>
                         <TableCell className="font-bold">
-                          {stock.closingStock.toFixed(2)}
+                          {clampNonNegative(stock.closingStock).toFixed(2)}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={stock.closingStock > 0 ? 'default' : 'destructive'}>
-                            {stock.closingStock > 0 ? 'In Stock' : 'Out of Stock'}
+                          <Badge variant={clampNonNegative(stock.closingStock) > 0 ? 'default' : 'destructive'}>
+                            {clampNonNegative(stock.closingStock) > 0 ? 'In Stock' : 'Out of Stock'}
                           </Badge>
                         </TableCell>
                         <TableCell>
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => router.push(`/stock/history?productId=${stock.productId}&companyId=${companyId}`)}
+                            onClick={() => router.push(`/stock/dashboard?companyId=${companyId}&productId=${stock.productId}`)}
                           >
                             <Eye className="w-4 h-4" />
                           </Button>
@@ -443,10 +453,10 @@ export default function StockDashboardPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-green-600">
-                          {entry.qtyIn > 0 ? entry.qtyIn.toFixed(2) : '-'}
+                          {entry.qtyIn > 0 ? entry.qtyIn.toFixed(2) : '0.00'}
                         </TableCell>
                         <TableCell className="text-red-600">
-                          {entry.qtyOut > 0 ? entry.qtyOut.toFixed(2) : '-'}
+                          {entry.qtyOut > 0 ? entry.qtyOut.toFixed(2) : '0.00'}
                         </TableCell>
                         <TableCell>{entry.refTable.replace('_', ' ')}</TableCell>
                       </TableRow>

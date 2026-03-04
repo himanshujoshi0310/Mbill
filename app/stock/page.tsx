@@ -42,6 +42,12 @@ interface StockSummary {
   closingStock: number
 }
 
+const clampNonNegative = (value: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 export default function StockPage() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
@@ -123,7 +129,7 @@ function StockPageContent() {
     
     // Calculate closing stock
     Object.keys(summary).forEach(productId => {
-      summary[productId].closingStock = summary[productId].totalIn - summary[productId].totalOut
+      summary[productId].closingStock = clampNonNegative(summary[productId].totalIn - summary[productId].totalOut)
     })
     
     setStockSummary(Object.values(summary))
@@ -152,7 +158,7 @@ function StockPageContent() {
   }
 
   const getTotalStockValue = () => {
-    return stockSummary.reduce((sum, stock) => sum + stock.closingStock, 0)
+    return stockSummary.reduce((sum, stock) => sum + clampNonNegative(stock.closingStock), 0)
   }
 
   const getLowStockProducts = () => {
@@ -164,7 +170,7 @@ function StockPageContent() {
   }
 
   const handleViewHistory = (productId: string) => {
-    router.push(`/stock/history?productId=${productId}&companyId=${companyId}`)
+    router.push(`/stock/dashboard?companyId=${companyId}&productId=${productId}`)
   }
 
   if (loading) {
@@ -260,18 +266,18 @@ function StockPageContent() {
                         <TableCell>{stock.productUnit}</TableCell>
                         <TableCell className="text-green-600">
                           <TrendingUp className="inline w-4 h-4 mr-1" />
-                          {stock.totalIn.toFixed(2)}
+                          {clampNonNegative(stock.totalIn).toFixed(2)}
                         </TableCell>
                         <TableCell className="text-red-600">
                           <TrendingDown className="inline w-4 h-4 mr-1" />
-                          {stock.totalOut.toFixed(2)}
+                          {clampNonNegative(stock.totalOut).toFixed(2)}
                         </TableCell>
                         <TableCell className="font-bold">
-                          {stock.closingStock.toFixed(2)}
+                          {clampNonNegative(stock.closingStock).toFixed(2)}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={stock.closingStock > 0 ? 'default' : 'destructive'}>
-                            {stock.closingStock > 0 ? 'In Stock' : 'Out of Stock'}
+                          <Badge variant={clampNonNegative(stock.closingStock) > 0 ? 'default' : 'destructive'}>
+                            {clampNonNegative(stock.closingStock) > 0 ? 'In Stock' : 'Out of Stock'}
                           </Badge>
                         </TableCell>
                         <TableCell>
@@ -375,10 +381,10 @@ function StockPageContent() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-green-600">
-                          {entry.qtyIn > 0 ? entry.qtyIn.toFixed(2) : '-'}
+                          {entry.qtyIn > 0 ? entry.qtyIn.toFixed(2) : '0.00'}
                         </TableCell>
                         <TableCell className="text-red-600">
-                          {entry.qtyOut > 0 ? entry.qtyOut.toFixed(2) : '-'}
+                          {entry.qtyOut > 0 ? entry.qtyOut.toFixed(2) : '0.00'}
                         </TableCell>
                         <TableCell>{entry.refTable.replace('_', ' ')}</TableCell>
                       </TableRow>

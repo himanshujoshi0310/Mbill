@@ -3,12 +3,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Eye, Plus, Download, FileText } from 'lucide-react'
 import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
@@ -59,6 +56,12 @@ interface Payment {
   createdAt: string
 }
 
+const clampNonNegative = (value: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 export default function PaymentDashboardPage() {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<'purchase' | 'sales'>('purchase')
@@ -67,15 +70,6 @@ export default function PaymentDashboardPage() {
   const [payments, setPayments] = useState<Payment[]>([])
   const [loading, setLoading] = useState(true)
   const [companyId, setCompanyId] = useState('')
-
-  // Payment form state
-  const [selectedBill, setSelectedBill] = useState('')
-  const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0])
-  const [amount, setAmount] = useState('')
-  const [mode, setMode] = useState<'cash' | 'online' | 'bank'>('cash')
-  const [txnRef, setTxnRef] = useState('')
-  const [note, setNote] = useState('')
-  const [showPaymentForm, setShowPaymentForm] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -130,9 +124,17 @@ export default function PaymentDashboardPage() {
 
       const billsRaw = await billsResponse.json().catch(() => [])
       const billsData = Array.isArray(billsRaw) ? billsRaw : []
+      const normalizedBills = billsData.map((bill: PurchaseBill | SalesBill) => ({
+        ...bill,
+        totalAmount: clampNonNegative(bill.totalAmount),
+        balanceAmount: clampNonNegative(bill.balanceAmount),
+        ...(activeTab === 'purchase'
+          ? { paidAmount: clampNonNegative((bill as PurchaseBill).paidAmount) }
+          : { receivedAmount: clampNonNegative((bill as SalesBill).receivedAmount) })
+      }))
 
-      const nextPurchaseBills = activeTab === 'purchase' ? billsData : purchaseBills
-      const nextSalesBills = activeTab === 'sales' ? billsData : salesBills
+      const nextPurchaseBills = activeTab === 'purchase' ? (normalizedBills as PurchaseBill[]) : purchaseBills
+      const nextSalesBills = activeTab === 'sales' ? (normalizedBills as SalesBill[]) : salesBills
       if (activeTab === 'purchase') {
         setPurchaseBills(nextPurchaseBills)
       } else {
@@ -141,7 +143,12 @@ export default function PaymentDashboardPage() {
 
       const paymentsRaw = await paymentsResponse.json().catch(() => [])
       const paymentsData = Array.isArray(paymentsRaw) ? paymentsRaw : []
-      setPayments(paymentsData)
+      setPayments(
+        paymentsData.map((payment: Payment) => ({
+          ...payment,
+          amount: clampNonNegative(payment.amount)
+        }))
+      )
       setClientCache(cacheKey, {
         purchaseBills: nextPurchaseBills,
         salesBills: nextSalesBills,
@@ -160,53 +167,8 @@ export default function PaymentDashboardPage() {
   }
 
   const handleMakePayment = (billId: string) => {
-    setSelectedBill(billId)
-    setShowPaymentForm(true)
-  }
-
-  const handleSubmitPayment = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    if (!selectedBill || !amount) {
-      alert('Please select a bill and enter amount')
-      return
-    }
-
-    try {
-      const paymentData = {
-        companyId,
-        billType: activeTab,
-        billId: selectedBill,
-        payDate,
-        amount: parseFloat(amount),
-        mode,
-        txnRef,
-        note
-      }
-
-      const response = await fetch('/api/payments', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(paymentData),
-      })
-
-      if (response.ok) {
-        alert('Payment recorded successfully!')
-        setShowPaymentForm(false)
-        setSelectedBill('')
-        setAmount('')
-        setTxnRef('')
-        setNote('')
-        void fetchData() // Refresh data
-      } else {
-        alert('Error recording payment')
-      }
-    } catch (error) {
-      console.error('Error:', error)
-      alert('Error recording payment')
-    }
+    const route = activeTab === 'purchase' ? '/payment/purchase/entry' : '/payment/sales/entry'
+    router.push(`${route}?companyId=${companyId}&billId=${billId}`)
   }
 
   const currentBills = useMemo(
@@ -215,25 +177,25 @@ export default function PaymentDashboardPage() {
   )
 
   const totalPending = useMemo(
-    () => currentBills.reduce((sum, bill) => sum + bill.balanceAmount, 0),
+    () => currentBills.reduce((sum, bill) => sum + clampNonNegative(bill.balanceAmount), 0),
     [currentBills]
   )
 
   const totalPaid = useMemo(() => {
     return currentBills.reduce((sum, bill) => {
       if (activeTab === 'purchase') {
-        return sum + (bill as PurchaseBill).paidAmount
+        return sum + clampNonNegative((bill as PurchaseBill).paidAmount)
       } else {
-        return sum + (bill as SalesBill).receivedAmount
+        return sum + clampNonNegative((bill as SalesBill).receivedAmount)
       }
     }, 0)
   }, [activeTab, currentBills])
 
   const getBillName = (bill: PurchaseBill | SalesBill) => {
     if (activeTab === 'purchase') {
-      return (bill as PurchaseBill).farmer.name
+      return (bill as PurchaseBill).farmer?.name || '-'
     } else {
-      return (bill as SalesBill).party.name
+      return (bill as SalesBill).party?.name || '-'
     }
   }
 
@@ -267,7 +229,7 @@ export default function PaymentDashboardPage() {
                 <div className="text-center">
                   <p className="text-sm text-gray-600">Total {activeTab === 'purchase' ? 'Purchase' : 'Sales'} Amount</p>
                   <p className="text-2xl font-bold text-blue-600">
-                    ₹{currentBills.reduce((sum, bill) => sum + bill.totalAmount, 0).toFixed(2)}
+                    ₹{currentBills.reduce((sum, bill) => sum + clampNonNegative(bill.totalAmount), 0).toFixed(2)}
                   </p>
                 </div>
               </CardContent>
@@ -346,11 +308,13 @@ export default function PaymentDashboardPage() {
                         <TableCell>{bill.billNo}</TableCell>
                         <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
                         <TableCell>{getBillName(bill)}</TableCell>
-                        <TableCell>₹{bill.totalAmount.toFixed(2)}</TableCell>
+                        <TableCell>₹{clampNonNegative(bill.totalAmount).toFixed(2)}</TableCell>
                         <TableCell>
-                          ₹{(activeTab === 'purchase' ? (bill as PurchaseBill).paidAmount : (bill as SalesBill).receivedAmount).toFixed(2)}
+                          ₹{(activeTab === 'purchase'
+                            ? clampNonNegative((bill as PurchaseBill).paidAmount)
+                            : clampNonNegative((bill as SalesBill).receivedAmount)).toFixed(2)}
                         </TableCell>
-                        <TableCell>₹{bill.balanceAmount.toFixed(2)}</TableCell>
+                        <TableCell>₹{clampNonNegative(bill.balanceAmount).toFixed(2)}</TableCell>
                         <TableCell>
                           <Badge variant={
                             bill.status === 'paid' ? 'default' :
@@ -364,7 +328,7 @@ export default function PaymentDashboardPage() {
                             <Button
                               size="sm"
                               onClick={() => handleMakePayment(bill.id)}
-                              disabled={bill.balanceAmount === 0}
+                              disabled={clampNonNegative(bill.balanceAmount) === 0}
                             >
                               <Plus className="w-4 h-4 mr-1" />
                               Pay
@@ -411,7 +375,7 @@ export default function PaymentDashboardPage() {
                         <TableCell>{payment.billNo}</TableCell>
                         <TableCell>{payment.partyName}</TableCell>
                         <TableCell>{new Date(payment.payDate).toLocaleDateString()}</TableCell>
-                        <TableCell>₹{payment.amount.toFixed(2)}</TableCell>
+                        <TableCell>₹{clampNonNegative(payment.amount).toFixed(2)}</TableCell>
                         <TableCell>
                           <Badge variant="outline">{payment.mode}</Badge>
                         </TableCell>
@@ -425,94 +389,6 @@ export default function PaymentDashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Payment Form Modal */}
-          {showPaymentForm && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-              <Card className="w-full max-w-md">
-                <CardHeader>
-                  <CardTitle>Record Payment</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <form onSubmit={handleSubmitPayment} className="space-y-4">
-                    <div>
-                      <Label htmlFor="bill">Bill</Label>
-                      <Select value={selectedBill} onValueChange={setSelectedBill}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select Bill" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {currentBills.filter(bill => bill.balanceAmount > 0).map((bill) => (
-                            <SelectItem key={bill.id} value={bill.id}>
-                              {bill.billNo} - {getBillName(bill)} (Balance: ₹{bill.balanceAmount.toFixed(2)})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label htmlFor="payDate">Payment Date</Label>
-                      <Input
-                        id="payDate"
-                        type="date"
-                        value={payDate}
-                        onChange={(e) => setPayDate(e.target.value)}
-                        required
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="amount">Amount</Label>
-                      <Input
-                        id="amount"
-                        type="number"
-                        step="0.01"
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                        placeholder="Enter amount"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="mode">Payment Mode</Label>
-                      <Select value={mode} onValueChange={(value: 'cash' | 'online' | 'bank') => setMode(value)}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select mode" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="cash">Cash</SelectItem>
-                          <SelectItem value="online">Online</SelectItem>
-                          <SelectItem value="bank">Bank</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label htmlFor="txnRef">Transaction Reference</Label>
-                      <Input
-                        id="txnRef"
-                        value={txnRef}
-                        onChange={(e) => setTxnRef(e.target.value)}
-                        placeholder="Enter transaction reference"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="note">Note</Label>
-                      <Input
-                        id="note"
-                        value={note}
-                        onChange={(e) => setNote(e.target.value)}
-                        placeholder="Enter note (optional)"
-                      />
-                    </div>
-                    <div className="flex justify-end space-x-2">
-                      <Button type="button" variant="outline" onClick={() => setShowPaymentForm(false)}>
-                        Cancel
-                      </Button>
-                      <Button type="submit">Record Payment</Button>
-                    </div>
-                  </form>
-                </CardContent>
-              </Card>
-            </div>
-          )}
         </div>
       </div>
     </DashboardLayout>

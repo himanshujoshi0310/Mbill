@@ -38,14 +38,20 @@ interface SalesBill {
   }>
 }
 
+const clampNonNegative = (value: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 function normalizeSalesBill(raw: any): SalesBill {
   return {
     id: String(raw?.id || ''),
     invoiceNo: String(raw?.invoiceNo || raw?.billNo || ''),
     invoiceDate: String(raw?.invoiceDate || raw?.billDate || ''),
-    totalAmount: Number(raw?.totalAmount || 0),
-    receivedAmount: Number(raw?.receivedAmount || 0),
-    balanceAmount: Number(raw?.balanceAmount || 0),
+    totalAmount: clampNonNegative(Number(raw?.totalAmount || 0)),
+    receivedAmount: clampNonNegative(Number(raw?.receivedAmount || 0)),
+    balanceAmount: clampNonNegative(Number(raw?.balanceAmount || 0)),
     status: String(raw?.status || 'unpaid'),
     party: {
       name: String(raw?.party?.name || ''),
@@ -54,10 +60,10 @@ function normalizeSalesBill(raw: any): SalesBill {
     },
     salesItems: Array.isArray(raw?.salesItems)
       ? raw.salesItems.map((item: any) => ({
-          weight: Number(item?.weight || item?.qty || 0),
-          qty: Number(item?.qty || item?.weight || 0),
-          rate: Number(item?.rate || 0),
-          amount: Number(item?.amount || 0),
+          weight: clampNonNegative(Number(item?.weight || item?.qty || 0)),
+          qty: clampNonNegative(Number(item?.qty || item?.weight || 0)),
+          rate: clampNonNegative(Number(item?.rate || 0)),
+          amount: clampNonNegative(Number(item?.amount || 0)),
           product: item?.product ? { name: String(item.product.name || '') } : undefined
         }))
       : []
