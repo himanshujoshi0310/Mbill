@@ -1,15 +1,15 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
-import { Eye, Plus, Download, FileText } from 'lucide-react'
+import { Eye, Plus } from 'lucide-react'
 import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
-import { resolveCompanyId } from '@/lib/company-context'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 import { isAbortError } from '@/lib/http'
 
 interface PurchaseBill {
@@ -20,11 +20,14 @@ interface PurchaseBill {
   paidAmount: number
   balanceAmount: number
   status: string
+  supplier?: {
+    name: string
+  } | null
   farmer: {
     name: string
     address: string
     krashakAnubandhNumber: string
-  }
+  } | null
 }
 
 interface SalesBill {
@@ -62,6 +65,12 @@ const clampNonNegative = (value: number): number => {
   return Math.max(0, parsed)
 }
 
+const formatDateSafe = (value: string): string => {
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime())) return '-'
+  return parsed.toLocaleDateString()
+}
+
 export default function PaymentDashboardPage() {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<'purchase' | 'sales'>('purchase')
@@ -71,13 +80,7 @@ export default function PaymentDashboardPage() {
   const [loading, setLoading] = useState(true)
   const [companyId, setCompanyId] = useState('')
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void fetchData(controller.signal)
-    return () => controller.abort()
-  }, [activeTab])
-
-  const fetchData = async (signal?: AbortSignal) => {
+  const fetchData = useCallback(async () => {
     try {
       const companyIdParam = await resolveCompanyId(window.location.search)
 
@@ -88,6 +91,7 @@ export default function PaymentDashboardPage() {
       }
 
       setCompanyId(companyIdParam)
+      stripCompanyParamsFromUrl()
 
       const cacheKey = `payments-dashboard:${companyIdParam}:${activeTab}`
       const cached = getClientCache<{
@@ -105,10 +109,9 @@ export default function PaymentDashboardPage() {
       // Fetch bills based on active tab
       const billsEndpoint = activeTab === 'purchase' ? 'purchase-bills' : 'sales-bills'
       const [billsResponse, paymentsResponse] = await Promise.all([
-        fetch(`/api/${billsEndpoint}?companyId=${companyIdParam}`, { signal }),
-        fetch(`/api/payments?companyId=${companyIdParam}&billType=${activeTab}`, { signal })
+        fetch(`/api/${billsEndpoint}?companyId=${companyIdParam}`),
+        fetch(`/api/payments?companyId=${companyIdParam}&billType=${activeTab}`)
       ])
-      if (signal?.aborted) return
       if (billsResponse.status === 401 || paymentsResponse.status === 401) {
         setLoading(false)
         router.push('/login')
@@ -133,13 +136,10 @@ export default function PaymentDashboardPage() {
           : { receivedAmount: clampNonNegative((bill as SalesBill).receivedAmount) })
       }))
 
-      const nextPurchaseBills = activeTab === 'purchase' ? (normalizedBills as PurchaseBill[]) : purchaseBills
-      const nextSalesBills = activeTab === 'sales' ? (normalizedBills as SalesBill[]) : salesBills
-      if (activeTab === 'purchase') {
-        setPurchaseBills(nextPurchaseBills)
-      } else {
-        setSalesBills(nextSalesBills)
-      }
+      const nextPurchaseBills = activeTab === 'purchase' ? (normalizedBills as PurchaseBill[]) : []
+      const nextSalesBills = activeTab === 'sales' ? (normalizedBills as SalesBill[]) : []
+      setPurchaseBills(nextPurchaseBills)
+      setSalesBills(nextSalesBills)
 
       const paymentsRaw = await paymentsResponse.json().catch(() => [])
       const paymentsData = Array.isArray(paymentsRaw) ? paymentsRaw : []
@@ -164,16 +164,32 @@ export default function PaymentDashboardPage() {
       setPayments([])
       setLoading(false)
     }
-  }
+  }, [activeTab, router])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (cancelled) return
+      await fetchData()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [fetchData])
 
   const handleMakePayment = (billId: string) => {
     const route = activeTab === 'purchase' ? '/payment/purchase/entry' : '/payment/sales/entry'
-    router.push(`${route}?companyId=${companyId}&billId=${billId}`)
+    router.push(`${route}?billId=${billId}`)
   }
 
   const currentBills = useMemo(
     () => (activeTab === 'purchase' ? purchaseBills : salesBills),
     [activeTab, purchaseBills, salesBills]
+  )
+
+  const pendingCurrentBills = useMemo(
+    () => currentBills.filter((bill) => clampNonNegative(bill.balanceAmount) > 0),
+    [currentBills]
   )
 
   const totalPending = useMemo(
@@ -193,7 +209,7 @@ export default function PaymentDashboardPage() {
 
   const getBillName = (bill: PurchaseBill | SalesBill) => {
     if (activeTab === 'purchase') {
-      return (bill as PurchaseBill).farmer?.name || '-'
+      return (bill as PurchaseBill).supplier?.name || (bill as PurchaseBill).farmer?.name || '-'
     } else {
       return (bill as SalesBill).party?.name || '-'
     }
@@ -216,7 +232,7 @@ export default function PaymentDashboardPage() {
           <div className="flex justify-between items-center mb-6">
             <h1 className="text-3xl font-bold">Payment Management</h1>
             <div className="flex gap-2">
-              <Button variant="outline" onClick={() => router.push('/dashboard?companyId=' + companyId)}>
+              <Button variant="outline" onClick={() => router.push('/main/dashboard')}>
                 Back to Dashboard
               </Button>
             </div>
@@ -303,10 +319,10 @@ export default function PaymentDashboardPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {currentBills.map((bill) => (
+                    {pendingCurrentBills.map((bill) => (
                       <TableRow key={bill.id}>
                         <TableCell>{bill.billNo}</TableCell>
-                        <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
+                        <TableCell>{formatDateSafe(bill.billDate)}</TableCell>
                         <TableCell>{getBillName(bill)}</TableCell>
                         <TableCell>₹{clampNonNegative(bill.totalAmount).toFixed(2)}</TableCell>
                         <TableCell>
@@ -336,7 +352,7 @@ export default function PaymentDashboardPage() {
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => router.push(`/${activeTab}/view?billId=${bill.id}&companyId=${companyId}`)}
+                              onClick={() => router.push(`/${activeTab}/view?billId=${bill.id}`)}
                             >
                               <Eye className="w-4 h-4" />
                             </Button>
@@ -344,6 +360,13 @@ export default function PaymentDashboardPage() {
                         </TableCell>
                       </TableRow>
                     ))}
+                    {pendingCurrentBills.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={8} className="text-center text-gray-500">
+                          No pending bills found
+                        </TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -374,7 +397,7 @@ export default function PaymentDashboardPage() {
                       <TableRow key={payment.id}>
                         <TableCell>{payment.billNo}</TableCell>
                         <TableCell>{payment.partyName}</TableCell>
-                        <TableCell>{new Date(payment.payDate).toLocaleDateString()}</TableCell>
+                        <TableCell>{formatDateSafe(payment.payDate)}</TableCell>
                         <TableCell>₹{clampNonNegative(payment.amount).toFixed(2)}</TableCell>
                         <TableCell>
                           <Badge variant="outline">{payment.mode}</Badge>

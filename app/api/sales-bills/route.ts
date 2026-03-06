@@ -36,10 +36,19 @@ const salesUpdateSchema = z.object({
     productId: z.string().min(1),
     totalWeight: z.coerce.number().min(0).optional(),
     qty: z.coerce.number().min(0).optional(),
+    bags: z.coerce.number().int().min(0).optional(),
     weight: z.coerce.number().min(0).optional(),
     rate: z.coerce.number().min(0).optional(),
     amount: z.coerce.number().min(0).optional()
   })).optional(),
+  transportBill: z.object({
+    transportName: z.string().optional().nullable(),
+    lorryNo: z.string().optional().nullable(),
+    freightPerQt: z.coerce.number().min(0).optional(),
+    freightAmount: z.coerce.number().min(0).optional(),
+    advance: z.coerce.number().min(0).optional(),
+    toPay: z.coerce.number().min(0).optional()
+  }).optional(),
   totalAmount: z.union([z.string(), z.number()]).optional(),
   receivedAmount: z.union([z.string(), z.number()]).optional(),
   balanceAmount: z.union([z.string(), z.number()]).optional(),
@@ -418,7 +427,7 @@ export async function PUT(request: NextRequest) {
               weight: normalizedWeight,
               rate: toNonNegativeNumber(item.rate, 0),
               amount: toNonNegativeNumber(item.amount, 0),
-              bags: null
+              bags: item.bags !== undefined ? Math.floor(toNonNegativeNumber(item.bags, 0)) : null
             }
           })
           await tx.stockLedger.create({
@@ -431,6 +440,60 @@ export async function PUT(request: NextRequest) {
               refTable: 'sales_bills',
               refId: existing.id
             }
+          })
+        }
+      }
+
+      if (body.transportBill) {
+        const transportName = body.transportBill.transportName?.trim() || null
+        const lorryNo = body.transportBill.lorryNo?.trim() || null
+        const freightPerQt = toNonNegativeNumber(body.transportBill.freightPerQt, 0)
+        const freightAmount = toNonNegativeNumber(body.transportBill.freightAmount, 0)
+        const advance = toNonNegativeNumber(body.transportBill.advance, 0)
+        const toPay = toNonNegativeNumber(body.transportBill.toPay, 0)
+
+        const hasTransportData = Boolean(
+          transportName ||
+          lorryNo ||
+          freightPerQt > 0 ||
+          freightAmount > 0 ||
+          advance > 0 ||
+          toPay > 0
+        )
+
+        const existingTransportBill = await tx.transportBill.findFirst({
+          where: { salesBillId: existing.id }
+        })
+
+        if (hasTransportData) {
+          if (existingTransportBill) {
+            await tx.transportBill.update({
+              where: { id: existingTransportBill.id },
+              data: {
+                transportName,
+                lorryNo,
+                freightPerQt,
+                freightAmount,
+                advance,
+                toPay
+              }
+            })
+          } else {
+            await tx.transportBill.create({
+              data: {
+                salesBillId: existing.id,
+                transportName,
+                lorryNo,
+                freightPerQt,
+                freightAmount,
+                advance,
+                toPay
+              }
+            })
+          }
+        } else if (existingTransportBill) {
+          await tx.transportBill.delete({
+            where: { id: existingTransportBill.id }
           })
         }
       }

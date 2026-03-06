@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, Suspense } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { CreditCard, Plus, Eye, TrendingUp, TrendingDown, DollarSign } from 'lucide-react'
 import { isAbortError } from '@/lib/http'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface PurchaseBill {
   id: string
@@ -78,8 +79,7 @@ export default function PaymentPage() {
 
 function PaymentPageContent() {
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const companyId = searchParams.get('companyId') || ''
+  const [companyId, setCompanyId] = useState('')
   const [loading, setLoading] = useState(true)
 
   const [activeTab, setActiveTab] = useState<'purchase' | 'sales'>('purchase')
@@ -92,24 +92,57 @@ function PaymentPageContent() {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
+  const parseApiJson = async <T,>(response: Response, fallback: T): Promise<T> => {
+    const raw = await response.text()
+    if (!raw) return fallback
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      return fallback
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (cancelled) return
+      if (!resolvedCompanyId) {
+        setLoading(false)
+        router.push('/company/select')
+        return
+      }
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [router])
+
   useEffect(() => {
     if (!companyId) return
-    const controller = new AbortController()
-    void fetchPaymentData(controller.signal)
-    return () => controller.abort()
+    let cancelled = false
+    ;(async () => {
+      await fetchPaymentData(() => cancelled)
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [companyId])
 
-  const fetchPaymentData = async (signal?: AbortSignal) => {
+  const fetchPaymentData = async (isCancelled: () => boolean = () => false) => {
     try {
+      if (isCancelled()) return
       setLoading(true)
       
       // Fetch all data
       const [purchaseRes, salesRes, paymentsRes] = await Promise.all([
-        fetch(`/api/purchase-bills?companyId=${companyId}`, { signal }),
-        fetch(`/api/sales-bills?companyId=${companyId}`, { signal }),
-        fetch(`/api/payments?companyId=${companyId}`, { signal })
+        fetch(`/api/purchase-bills?companyId=${companyId}`),
+        fetch(`/api/sales-bills?companyId=${companyId}`),
+        fetch(`/api/payments?companyId=${companyId}`)
       ])
-      if (signal?.aborted) return
+      if (isCancelled()) return
 
       if ([purchaseRes.status, salesRes.status, paymentsRes.status].includes(403)) {
         setPurchaseBills([])
@@ -118,10 +151,13 @@ function PaymentPageContent() {
         setLoading(false)
         return
       }
-      
-      const purchaseData = await purchaseRes.json()
-      const salesData = await salesRes.json()
-      const paymentsData = await paymentsRes.json()
+
+      const [purchaseData, salesData, paymentsData] = await Promise.all([
+        parseApiJson<PurchaseBill[]>(purchaseRes, []),
+        parseApiJson<SalesBill[]>(salesRes, []),
+        parseApiJson<Payment[]>(paymentsRes, [])
+      ])
+      if (isCancelled()) return
       
       const safePurchaseBills = Array.isArray(purchaseData)
         ? purchaseData.map((bill: PurchaseBill) => ({
@@ -152,7 +188,7 @@ function PaymentPageContent() {
       
       setLoading(false)
     } catch (error) {
-      if (isAbortError(error)) return
+      if (isCancelled() || isAbortError(error)) return
       console.error('Error fetching payment data:', error)
       setPurchaseBills([])
       setSalesBills([])
@@ -205,11 +241,12 @@ function PaymentPageContent() {
   })
 
   const handleMakePayment = (billId: string, billType: 'purchase' | 'sales') => {
-    router.push(`/payment/dashboard?companyId=${companyId}&billId=${billId}&billType=${billType}`)
+    const route = billType === 'purchase' ? '/payment/purchase/entry' : '/payment/sales/entry'
+    router.push(`${route}?billId=${billId}`)
   }
 
   const handleViewBill = (billId: string, billType: 'purchase' | 'sales') => {
-    router.push(`/${billType}/view?billId=${billId}&companyId=${companyId}`)
+    router.push(`/${billType}/view?billId=${billId}`)
   }
 
   if (loading) {
@@ -230,11 +267,11 @@ function PaymentPageContent() {
           <div className="flex justify-between items-center mb-6">
             <h1 className="text-3xl font-bold">Payment Management</h1>
             <div className="flex gap-2">
-              <Button onClick={() => router.push(`/payment/dashboard?companyId=${companyId}`)}>
+              <Button onClick={() => router.push('/payment/dashboard')}>
                 <Plus className="w-4 h-4 mr-2" />
                 Record Payment
               </Button>
-              <Button variant="outline" onClick={() => router.push('/main/dashboard?companyId=' + companyId)}>
+              <Button variant="outline" onClick={() => router.push('/main/dashboard')}>
                 Back to Dashboard
               </Button>
             </div>

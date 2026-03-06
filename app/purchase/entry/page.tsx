@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { kgToQuintal, round4, toKg } from '@/lib/unit-conversion'
-import { getCompanyIdFromSearch, resolveCompanyId } from '@/lib/company-context'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 import { isAbortError } from '@/lib/http'
 import {
   clearDefaultPurchaseProductId,
@@ -31,6 +31,7 @@ interface UserUnit {
 
 export default function PurchaseEntryPage() {
   const router = useRouter()
+  const [companyId, setCompanyId] = useState('')
   const [products, setProducts] = useState<Product[]>([])
   const [userUnits, setUserUnits] = useState<UserUnit[]>([])
   const [loading, setLoading] = useState(true)
@@ -95,8 +96,10 @@ export default function PurchaseEntryPage() {
         router.push('/company/select')
         return
       }
+      setCompanyId(companyId)
 
       // Same-origin fetch automatically sends auth cookies.
+      stripCompanyParamsFromUrl()
       const [productsRes, billsRes, unitsRes] = await Promise.all([
         fetch(`/api/products?companyId=${companyId}`),
         fetch(`/api/purchase-bills?companyId=${companyId}&last=true`),
@@ -299,7 +302,7 @@ export default function PurchaseEntryPage() {
 
       if (response.ok) {
         alert('Purchase bill created successfully!')
-        router.push('/dashboard?companyId=' + companyId)
+        router.push('/main/dashboard')
       } else {
         alert('Error creating purchase bill: ' + (responseData.error || 'Unknown error'))
       }
@@ -311,13 +314,11 @@ export default function PurchaseEntryPage() {
 
   if (loading) {
     return (
-      <DashboardLayout companyId="">
+      <DashboardLayout companyId={companyId}>
         <div className="flex justify-center items-center h-screen">Loading...</div>
       </DashboardLayout>
     )
   }
-
-  const companyId = getCompanyIdFromSearch(window.location.search)
   const defaultProductName = products.find((product) => product.id === defaultProductId)?.name || ''
 
   return (

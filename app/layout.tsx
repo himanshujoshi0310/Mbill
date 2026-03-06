@@ -90,13 +90,12 @@ export default function RootLayout({
           return await originalFetch(input, init)
         } catch (error) {
           if (isAbortError(error)) {
-            return new Response(
-              JSON.stringify({ error: 'Request aborted', aborted: true }),
-              {
-                status: 499,
-                headers: { 'Content-Type': 'application/json' }
+            return new Response(JSON.stringify({ aborted: true }), {
+              status: 499,
+              headers: {
+                'Content-Type': 'application/json'
               }
-            )
+            })
           }
           throw error
         }

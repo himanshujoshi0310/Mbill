@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Eye, Edit, Trash2, Printer, FileText, Download } from 'lucide-react'
 import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
-import { resolveCompanyId } from '@/lib/company-context'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 import { isAbortError } from '@/lib/http'
 
 interface SalesBill {
@@ -125,13 +125,7 @@ export default function SalesListPage() {
   const [partyContact, setPartyContact] = useState('')
   const [payable, setPayable] = useState('')
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void fetchSalesBills(controller.signal)
-    return () => controller.abort()
-  }, [])
-
-  const fetchSalesBills = async (signal?: AbortSignal) => {
+  const fetchSalesBills = useCallback(async () => {
     try {
       const companyIdParam = await resolveCompanyId(window.location.search)
 
@@ -142,6 +136,7 @@ export default function SalesListPage() {
       }
 
       setCompanyId(companyIdParam)
+      stripCompanyParamsFromUrl()
 
       const cacheKey = `sales-bills:${companyIdParam}`
       const cached = getClientCache<SalesBill[]>(cacheKey, 15_000)
@@ -150,8 +145,7 @@ export default function SalesListPage() {
         setLoading(false)
       }
 
-      const response = await fetch(`/api/sales-bills?companyId=${companyIdParam}`, { signal })
-      if (signal?.aborted) return
+      const response = await fetch(`/api/sales-bills?companyId=${companyIdParam}`)
       if (response.status === 401) {
         setLoading(false)
         router.push('/login')
@@ -173,7 +167,14 @@ export default function SalesListPage() {
       setSalesBills([])
       setLoading(false)
     }
-  }
+  }, [router])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void fetchSalesBills()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [fetchSalesBills])
 
   const filteredBills = useMemo(() => {
     let filtered = salesBills
@@ -263,11 +264,11 @@ export default function SalesListPage() {
   }
 
   const handleView = (billId: string) => {
-    router.push(`/sales/view?billId=${billId}&companyId=${companyId}`)
+    router.push(`/sales/view?billId=${billId}`)
   }
 
   const handleEdit = (billId: string) => {
-    router.push(`/sales/edit?billId=${billId}&companyId=${companyId}`)
+    router.push(`/sales/edit?billId=${billId}`)
   }
 
   const handleDelete = (billId: string) => {

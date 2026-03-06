@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Package, Plus, Eye, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
+import { Plus, Eye, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
 
 interface Product {
   id: string
@@ -59,13 +59,38 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
-  useEffect(() => {
-    if (companyId) {
-      fetchStockData()
-    }
-  }, [companyId])
+  const calculateStockSummary = useCallback((ledger: StockLedger[], productList: Product[]) => {
+    const summary: { [key: string]: StockSummary } = {}
+    
+    // Initialize summary for all products
+    productList.forEach((product) => {
+      summary[product.id] = {
+        productId: product.id,
+        productName: product.name,
+        productUnit: product.unit,
+        totalIn: 0,
+        totalOut: 0,
+        closingStock: 0
+      }
+    })
+    
+    // Calculate totals from ledger
+    ledger.forEach((entry) => {
+      if (summary[entry.product.id]) {
+        summary[entry.product.id].totalIn += entry.qtyIn
+        summary[entry.product.id].totalOut += entry.qtyOut
+      }
+    })
+    
+    // Calculate closing stock
+    Object.keys(summary).forEach((productId) => {
+      summary[productId].closingStock = Math.max(0, summary[productId].totalIn - summary[productId].totalOut)
+    })
+    
+    setStockSummary(Object.values(summary))
+  }, [])
 
-  const fetchStockData = async () => {
+  const fetchStockData = useCallback(async () => {
     try {
       setLoading(true)
       
@@ -89,38 +114,17 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
       console.error('Error fetching stock data:', error)
       setLoading(false)
     }
-  }
+  }, [companyId, calculateStockSummary])
 
-  const calculateStockSummary = (ledger: StockLedger[], productList: Product[]) => {
-    const summary: { [key: string]: StockSummary } = {}
-    
-    // Initialize summary for all products
-    productList.forEach(product => {
-      summary[product.id] = {
-        productId: product.id,
-        productName: product.name,
-        productUnit: product.unit,
-        totalIn: 0,
-        totalOut: 0,
-        closingStock: 0
-      }
-    })
-    
-    // Calculate totals from ledger
-    ledger.forEach(entry => {
-      if (summary[entry.product.id]) {
-        summary[entry.product.id].totalIn += entry.qtyIn
-        summary[entry.product.id].totalOut += entry.qtyOut
-      }
-    })
-    
-    // Calculate closing stock
-    Object.keys(summary).forEach(productId => {
-      summary[productId].closingStock = Math.max(0, summary[productId].totalIn - summary[productId].totalOut)
-    })
-    
-    setStockSummary(Object.values(summary))
-  }
+  useEffect(() => {
+    if (companyId) {
+      const timer = window.setTimeout(() => {
+        void fetchStockData()
+      }, 0)
+      return () => window.clearTimeout(timer)
+    }
+    return undefined
+  }, [companyId, fetchStockData])
 
   const getFilteredLedger = () => {
     let filtered = stockLedger
@@ -153,11 +157,11 @@ export default function StockManagementTab({ companyId }: StockManagementTabProp
   }
 
   const handleStockAdjustment = () => {
-    router.push(`/stock/dashboard?companyId=${companyId}`)
+    router.push('/stock/dashboard')
   }
 
   const handleViewHistory = (productId: string) => {
-    router.push(`/stock/dashboard?companyId=${companyId}&productId=${productId}`)
+    router.push(`/stock/dashboard?productId=${productId}`)
   }
 
   if (loading) {

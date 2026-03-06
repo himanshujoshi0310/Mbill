@@ -7,6 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { ArrowLeft, Edit, Trash2, Printer, FileText } from 'lucide-react'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
+import { isAbortError } from '@/lib/http'
 
 interface PurchaseBill {
   id: string
@@ -52,31 +54,44 @@ function PurchaseViewPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const billId = searchParams.get('billId')
-  const companyId = searchParams.get('companyId')
+  const [companyId, setCompanyId] = useState('')
 
   const [purchaseBill, setPurchaseBill] = useState<PurchaseBill | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (billId && companyId) {
-      fetchPurchaseBill()
-    } else {
-      setLoading(false)
-      alert('Missing bill ID or company ID')
-      router.back()
+    let cancelled = false
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (cancelled) return
+      if (!billId || !resolvedCompanyId) {
+        setLoading(false)
+        alert('Missing bill ID or company selection')
+        router.back()
+        return
+      }
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchPurchaseBill(resolvedCompanyId, () => cancelled)
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [billId, companyId])
+  }, [billId, router])
 
-  const fetchPurchaseBill = async () => {
+  const fetchPurchaseBill = async (targetCompanyId: string, isCancelled: () => boolean = () => false) => {
     try {
-      const response = await fetch(`/api/purchase-bills?companyId=${companyId}&billId=${billId}`)
+      const response = await fetch(`/api/purchase-bills?companyId=${targetCompanyId}&billId=${billId}`)
+      if (isCancelled()) return
       if (!response.ok) {
         throw new Error('Purchase bill not found')
       }
       const billData: PurchaseBill = await response.json()
+      if (isCancelled()) return
       setPurchaseBill(billData)
       setLoading(false)
     } catch (error) {
+      if (isCancelled() || isAbortError(error)) return
       console.error('Error fetching purchase bill:', error)
       setLoading(false)
       alert('Error loading purchase bill')
@@ -85,7 +100,7 @@ function PurchaseViewPageContent() {
   }
 
   const handleEdit = () => {
-    router.push(`/purchase/edit?billId=${billId}&companyId=${companyId}`)
+    router.push(`/purchase/edit?billId=${billId}`)
   }
 
   const handleDelete = () => {
@@ -114,7 +129,7 @@ function PurchaseViewPageContent() {
 
       if (response.ok) {
         alert('Purchase bill deleted successfully!')
-        router.push(`/purchase/list?companyId=${companyId}`)
+        router.push('/purchase/list')
       } else {
         const errorData = await response.json()
         alert('Error deleting purchase bill: ' + (errorData.error || 'Unknown error'))

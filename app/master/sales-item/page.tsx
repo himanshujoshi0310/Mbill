@@ -75,7 +75,6 @@ export default function SalesItemMasterPage() {
       const response = await fetch(`/api/products?companyId=${companyId}`)
       if (response.ok) {
         const data = await response.json()
-        console.log('Fetched products:', data) // Debug log
         setProducts(data)
       }
     } catch (error) {

@@ -46,7 +46,6 @@ export default function AuthTestPage() {
       })
       
       const data = await response.json()
-      console.log('Login test response:', data)
       
       if (response.ok) {
         alert('Login successful! Try checking auth again.')

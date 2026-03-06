@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Building2, Loader2, Lock, Pencil, Plus, RefreshCw, ShieldCheck, Store, Unlock, Users } from 'lucide-react'
+import { PERMISSION_MODULES, type PermissionModule } from '@/lib/permissions'
 
 type CrudSection = 'traders' | 'companies' | 'users'
 
@@ -63,6 +64,7 @@ type ModalState = {
     address?: string
     phone?: string
     locked?: boolean
+    privilegePreset?: 'keep' | 'none' | 'read' | 'all'
   }
 }
 
@@ -81,6 +83,7 @@ export default function SuperAdminCrudPage() {
   const [modal, setModal] = useState<ModalState | null>(null)
   const [saving, setSaving] = useState(false)
   const [lockingKey, setLockingKey] = useState<string | null>(null)
+  const [privilegeSavingKey, setPrivilegeSavingKey] = useState<string | null>(null)
 
   const [traders, setTraders] = useState<TraderRow[]>([])
   const [companies, setCompanies] = useState<CompanyRow[]>([])
@@ -211,7 +214,8 @@ export default function SuperAdminCrudPage() {
         userId: '',
         name: '',
         password: '',
-        locked: false
+        locked: false,
+        privilegePreset: 'all'
       }
     })
   }
@@ -259,7 +263,8 @@ export default function SuperAdminCrudPage() {
           userId: row.userId,
           name: row.name || '',
           password: '',
-          locked: row.locked
+          locked: row.locked,
+          privilegePreset: 'keep'
         }
       })
   }
@@ -275,6 +280,33 @@ export default function SuperAdminCrudPage() {
         }
       }
     })
+  }
+
+  const buildPermissionsPayload = (preset: 'none' | 'read' | 'all') =>
+    PERMISSION_MODULES.map((module: PermissionModule) => ({
+      module,
+      canRead: preset !== 'none',
+      canWrite: preset === 'all'
+    }))
+
+  const applyUserPrivileges = async (
+    userDbId: string,
+    companyId: string,
+    preset: 'none' | 'read' | 'all'
+  ) => {
+    const response = await fetch(`/api/super-admin/users/${userDbId}/permissions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        companyId,
+        permissions: buildPermissionsPayload(preset)
+      })
+    })
+
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to save privileges')
+    }
   }
 
   const saveModal = async () => {
@@ -345,12 +377,42 @@ export default function SuperAdminCrudPage() {
         throw new Error(responsePayload.error || 'Failed to save')
       }
 
+      if (section === 'users') {
+        const preset = (form.privilegePreset || 'keep') as 'keep' | 'none' | 'read' | 'all'
+        const targetUserId = String(responsePayload?.id || recordId || '')
+        const targetCompanyId = String(form.companyId?.trim() || '')
+        if (preset !== 'keep' && targetUserId && targetCompanyId) {
+          await applyUserPrivileges(targetUserId, targetCompanyId, preset)
+        }
+      }
+
       resetModal()
       await fetchData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const quickApplyPrivileges = async (row: UserRow, preset: 'none' | 'read' | 'all') => {
+    if (!row.companyId) {
+      setError('User has no company assigned. Cannot set privileges.')
+      return
+    }
+
+    const key = `${row.id}:${preset}`
+    if (privilegeSavingKey === key) return
+
+    try {
+      setError(null)
+      setPrivilegeSavingKey(key)
+      await applyUserPrivileges(row.id, row.companyId, preset)
+      await fetchData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update privileges')
+    } finally {
+      setPrivilegeSavingKey(null)
     }
   }
 
@@ -631,13 +693,45 @@ export default function SuperAdminCrudPage() {
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          <Link
-                            href={`/super-admin/users/${row.id}`}
-                            className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
-                          >
-                            <ShieldCheck className="h-3 w-3" />
-                            Matrix
-                          </Link>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Link
+                              href={`/super-admin/users/${row.id}`}
+                              className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                            >
+                              <ShieldCheck className="h-3 w-3" />
+                              Matrix
+                            </Link>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              disabled={!row.companyId || privilegeSavingKey === `${row.id}:all`}
+                              onClick={() => quickApplyPrivileges(row, 'all')}
+                            >
+                              Full
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              disabled={!row.companyId || privilegeSavingKey === `${row.id}:read`}
+                              onClick={() => quickApplyPrivileges(row, 'read')}
+                            >
+                              Read
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              disabled={!row.companyId || privilegeSavingKey === `${row.id}:none`}
+                              onClick={() => quickApplyPrivileges(row, 'none')}
+                            >
+                              None
+                            </Button>
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
@@ -807,6 +901,23 @@ export default function SuperAdminCrudPage() {
                       value={modal.form.password || ''}
                       onChange={(e) => setModalField('password', e.target.value)}
                     />
+                  </div>
+                  <div>
+                    <Label>Privilege Preset</Label>
+                    <Select
+                      value={modal.form.privilegePreset || 'keep'}
+                      onValueChange={(value) => setModalField('privilegePreset', value)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select privilege preset" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {modal.mode === 'edit' ? <SelectItem value="keep">Keep Existing</SelectItem> : null}
+                        <SelectItem value="all">Full Access (Read + Write)</SelectItem>
+                        <SelectItem value="read">Read Only</SelectItem>
+                        <SelectItem value="none">No Access</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="flex items-center gap-2 pt-6">
                     <input

@@ -36,7 +36,7 @@ export default function CompanySelector({ companies }: CompanySelectorProps) {
           return
         }
 
-        router.push(`/main/dashboard?companyId=${selectedCompany}&companyIds=${selectedCompany}`)
+        router.push('/main/dashboard')
       } catch {
         // Silent fail and keep user on selector page
       }

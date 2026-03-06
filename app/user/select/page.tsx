@@ -50,16 +50,16 @@ export default function UserSelectPage() {
     // Route based on user role
     switch (user.role) {
       case 'payment':
-        router.push(`/payment/dashboard?companyId=${companyId}`)
+        router.push('/payment/dashboard')
         break
       case 'stock':
-        router.push(`/stock/dashboard?companyId=${companyId}`)
+        router.push('/stock/dashboard')
         break
       case 'admin':
-        router.push(`/dashboard?companyId=${companyId}`)
+        router.push('/main/dashboard')
         break
       default:
-        router.push(`/dashboard?companyId=${companyId}`)
+        router.push('/main/dashboard')
     }
   }
 

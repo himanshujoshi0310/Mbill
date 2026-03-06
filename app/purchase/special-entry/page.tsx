@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { kgToQuintal, round4, toKg } from '@/lib/unit-conversion'
-import { getCompanyIdFromSearch, resolveCompanyId } from '@/lib/company-context'
+import { getCompanyIdFromSearch, resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 import { isAbortError } from '@/lib/http'
 import {
   clearDefaultPurchaseProductId,
@@ -27,11 +27,6 @@ interface Supplier {
   name: string
   address: string
   phone1: string
-  phone2?: string | null
-  gstNumber?: string | null
-  ifscCode?: string | null
-  bankName?: string | null
-  accountNo?: string | null
 }
 
 interface UserUnit {
@@ -55,11 +50,6 @@ export default function SpecialPurchaseEntryPage() {
   const [supplierName, setSupplierName] = useState('')
   const [supplierAddress, setSupplierAddress] = useState('')
   const [supplierContact, setSupplierContact] = useState('')
-  const [supplierContact2, setSupplierContact2] = useState('')
-  const [supplierGstNumber, setSupplierGstNumber] = useState('')
-  const [supplierIfscCode, setSupplierIfscCode] = useState('')
-  const [supplierBankName, setSupplierBankName] = useState('')
-  const [supplierAccountNo, setSupplierAccountNo] = useState('')
   const [selectedProduct, setSelectedProduct] = useState('')
   const [defaultProductId, setDefaultProductIdState] = useState('')
   const [selectedUserUnit, setSelectedUserUnit] = useState('')
@@ -110,6 +100,7 @@ export default function SpecialPurchaseEntryPage() {
         router.push('/company/select')
         return
       }
+      stripCompanyParamsFromUrl()
 
       const [productsRes, suppliersRes, unitsRes] = await Promise.all([
         fetch(`/api/products?companyId=${companyId}`),
@@ -217,20 +208,10 @@ export default function SpecialPurchaseEntryPage() {
       setSupplierName(supplier.name)
       setSupplierAddress(supplier.address || '')
       setSupplierContact(supplier.phone1 || '')
-      setSupplierContact2(supplier.phone2 || '')
-      setSupplierGstNumber(supplier.gstNumber || '')
-      setSupplierIfscCode(supplier.ifscCode || '')
-      setSupplierBankName(supplier.bankName || '')
-      setSupplierAccountNo(supplier.accountNo || '')
     } else {
       setSupplierName('')
       setSupplierAddress('')
       setSupplierContact('')
-      setSupplierContact2('')
-      setSupplierGstNumber('')
-      setSupplierIfscCode('')
-      setSupplierBankName('')
-      setSupplierAccountNo('')
     }
   }
 
@@ -244,11 +225,6 @@ export default function SpecialPurchaseEntryPage() {
       alert('Supplier contact must be exactly 10 digits')
       return
     }
-    if (supplierContact2 && supplierContact2.length !== 10) {
-      alert('Supplier alternate contact must be exactly 10 digits')
-      return
-    }
-
     try {
       const companyId = await resolveCompanyId(window.location.search)
       if (!companyId) {
@@ -256,6 +232,7 @@ export default function SpecialPurchaseEntryPage() {
         router.push('/company/select')
         return
       }
+      stripCompanyParamsFromUrl()
 
       const response = await fetch('/api/suppliers', {
         method: 'POST',
@@ -267,11 +244,6 @@ export default function SpecialPurchaseEntryPage() {
           name: supplierName,
           address: supplierAddress,
           phone1: supplierContact,
-          phone2: supplierContact2,
-          gstNumber: supplierGstNumber,
-          ifscCode: supplierIfscCode,
-          bankName: supplierBankName,
-          accountNo: supplierAccountNo,
         }),
       })
 
@@ -287,11 +259,6 @@ export default function SpecialPurchaseEntryPage() {
         setSupplierName(newSupplier.name || '')
         setSupplierAddress(newSupplier.address || '')
         setSupplierContact(newSupplier.phone1 || '')
-        setSupplierContact2(newSupplier.phone2 || '')
-        setSupplierGstNumber(newSupplier.gstNumber || '')
-        setSupplierIfscCode(newSupplier.ifscCode || '')
-        setSupplierBankName(newSupplier.bankName || '')
-        setSupplierAccountNo(newSupplier.accountNo || '')
         alert('Supplier added successfully!')
       } else {
         const error = await response.json()
@@ -315,11 +282,6 @@ export default function SpecialPurchaseEntryPage() {
       alert('Supplier contact must be exactly 10 digits')
       return
     }
-    if (supplierContact2 && supplierContact2.length !== 10) {
-      alert('Supplier alternate contact must be exactly 10 digits')
-      return
-    }
-
     // Payment validation
     const gross = parseFloat(grossAmount) || 0
     const paid = parseFloat(paidAmount) || 0
@@ -351,6 +313,7 @@ export default function SpecialPurchaseEntryPage() {
         router.push('/company/select')
         return
       }
+      stripCompanyParamsFromUrl()
 
       const requestData = {
         companyId,
@@ -359,11 +322,6 @@ export default function SpecialPurchaseEntryPage() {
         supplierName,
         supplierAddress,
         supplierContact,
-        supplierContact2,
-        supplierGstNumber,
-        supplierIfscCode,
-        supplierBankName,
-        supplierAccountNo,
         productId: selectedProduct,
         noOfBags: Math.max(0, parseFloat(noOfBags) || 0),
         weight: Math.max(0, parseFloat(weight) || 0),
@@ -388,7 +346,7 @@ export default function SpecialPurchaseEntryPage() {
 
       if (response.ok) {
         alert('Special purchase bill created successfully!')
-        router.push('/main/dashboard?companyId=' + companyId)
+        router.push('/main/dashboard')
       } else {
         alert('Error creating special purchase bill: ' + (responseData.error || 'Unknown error'))
       }
@@ -470,11 +428,6 @@ export default function SpecialPurchaseEntryPage() {
                           setSupplierName('')
                           setSupplierAddress('')
                           setSupplierContact('')
-                          setSupplierContact2('')
-                          setSupplierGstNumber('')
-                          setSupplierIfscCode('')
-                          setSupplierBankName('')
-                          setSupplierAccountNo('')
                         }}
                       >
                         New
@@ -517,63 +470,6 @@ export default function SpecialPurchaseEntryPage() {
                       pattern="[0-9]{10}"
                       onChange={(e) => setSupplierContact(e.target.value.replace(/\D/g, '').slice(0, 10))}
                       placeholder="Enter supplier contact"
-                      disabled={selectedSupplier !== ''}
-                    />
-                  </div>
-
-                  <div>
-                    <Label htmlFor="supplierContact2">Supplier Alt. Contact No.</Label>
-                    <Input
-                      id="supplierContact2"
-                      value={supplierContact2}
-                      maxLength={10}
-                      pattern="[0-9]{10}"
-                      onChange={(e) => setSupplierContact2(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                      placeholder="Enter alternate contact"
-                      disabled={selectedSupplier !== ''}
-                    />
-                  </div>
-
-                  <div>
-                    <Label htmlFor="supplierGstNumber">Supplier GST Number</Label>
-                    <Input
-                      id="supplierGstNumber"
-                      value={supplierGstNumber}
-                      onChange={(e) => setSupplierGstNumber(e.target.value.toUpperCase())}
-                      placeholder="Enter GST number"
-                      disabled={selectedSupplier !== ''}
-                    />
-                  </div>
-
-                  <div>
-                    <Label htmlFor="supplierIfscCode">Supplier IFSC Code</Label>
-                    <Input
-                      id="supplierIfscCode"
-                      value={supplierIfscCode}
-                      onChange={(e) => setSupplierIfscCode(e.target.value.toUpperCase())}
-                      placeholder="Enter IFSC code"
-                      disabled={selectedSupplier !== ''}
-                    />
-                  </div>
-
-                  <div>
-                    <Label htmlFor="supplierBankName">Supplier Bank Name</Label>
-                    <Input
-                      id="supplierBankName"
-                      value={supplierBankName}
-                      onChange={(e) => setSupplierBankName(e.target.value)}
-                      placeholder="Enter bank name"
-                      disabled={selectedSupplier !== ''}
-                    />
-                  </div>
-
-                  <div>
-                    <Label htmlFor="supplierAccountNo">Supplier Account No.</Label>
-                    <Input
-                      id="supplierAccountNo"
-                      value={supplierAccountNo}
-                      onChange={(e) => setSupplierAccountNo(e.target.value)}
-                      placeholder="Enter account number"
                       disabled={selectedSupplier !== ''}
                     />
                   </div>

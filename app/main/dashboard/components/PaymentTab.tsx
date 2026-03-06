@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { CreditCard, Plus, Eye } from 'lucide-react'
+import { Plus, Eye } from 'lucide-react'
 
 interface PurchaseBill {
   id: string
@@ -78,13 +78,7 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
-  useEffect(() => {
-    if (companyId) {
-      fetchPaymentData()
-    }
-  }, [companyId])
-
-  const fetchPaymentData = async () => {
+  const fetchPaymentData = useCallback(async () => {
     try {
       setLoading(true)
       
@@ -131,7 +125,17 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
       console.error('Error fetching payment data:', error)
       setLoading(false)
     }
-  }
+  }, [companyId])
+
+  useEffect(() => {
+    if (companyId) {
+      const timer = window.setTimeout(() => {
+        void fetchPaymentData()
+      }, 0)
+      return () => window.clearTimeout(timer)
+    }
+    return undefined
+  }, [companyId, fetchPaymentData])
 
   const getFilteredPayments = () => {
     let filtered = payments
@@ -151,20 +155,6 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
     return filtered.sort((a, b) => new Date(b.payDate).getTime() - new Date(a.payDate).getTime())
   }
 
-  const getPurchaseStats = () => ({
-    total: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.totalAmount), 0),
-    paid: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.paidAmount), 0),
-    pending: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.balanceAmount), 0),
-    count: purchaseBills.length
-  })
-
-  const getSalesStats = () => ({
-    total: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.totalAmount), 0),
-    received: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.receivedAmount), 0),
-    pending: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.balanceAmount), 0),
-    count: salesBills.length
-  })
-
   const getPaymentStats = () => ({
     totalPayments: payments.reduce((sum, payment) => sum + clampNonNegative(payment.amount), 0),
     purchasePayments: payments.filter(p => p.billType === 'purchase').reduce((sum, p) => sum + clampNonNegative(p.amount), 0),
@@ -173,11 +163,12 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
   })
 
   const handleMakePayment = (billId: string, billType: 'purchase' | 'sales') => {
-    router.push(`/payment/dashboard?companyId=${companyId}&billId=${billId}&billType=${billType}`)
+    const route = billType === 'purchase' ? '/payment/purchase/entry' : '/payment/sales/entry'
+    router.push(`${route}?billId=${billId}`)
   }
 
   const handleViewBill = (billId: string, billType: 'purchase' | 'sales') => {
-    router.push(`/${billType}/view?billId=${billId}&companyId=${companyId}`)
+    router.push(`/${billType}/view?billId=${billId}`)
   }
 
   if (loading) {
@@ -194,15 +185,15 @@ export default function PaymentTab({ companyId }: PaymentTabProps) {
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold">Payment Management</h2>
         <div className="flex gap-2">
-          <Button onClick={() => router.push(`/payment/purchase/entry?companyId=${companyId}`)}>
+          <Button onClick={() => router.push('/payment/purchase/entry')}>
             <Plus className="w-4 h-4 mr-2" />
             Record Purchase Payment
           </Button>
-          <Button onClick={() => router.push(`/payment/sales/entry?companyId=${companyId}`)}>
+          <Button onClick={() => router.push('/payment/sales/entry')}>
             <Plus className="w-4 h-4 mr-2" />
             Record Sales Receipt
           </Button>
-          <Button onClick={() => router.push(`/payment/dashboard?companyId=${companyId}`)}>
+          <Button onClick={() => router.push('/payment/dashboard')}>
             <Eye className="w-4 h-4 mr-2" />
             View History
           </Button>

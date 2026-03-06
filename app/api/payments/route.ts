@@ -25,7 +25,7 @@ const paymentCreateSchema = z
     note: z.string().trim().max(400).optional().nullable(),
     status: z.enum(['pending', 'paid']).optional()
   })
-  .strict()
+  .passthrough()
 
 const clampNonNegative = (value: unknown): number => {
   const parsed = Number(value)

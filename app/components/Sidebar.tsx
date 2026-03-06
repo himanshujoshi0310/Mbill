@@ -51,6 +51,7 @@ const menuItems: MenuItem[] = [
     icon: Settings,
     children: [
       { title: 'Product', href: '/master/product', permissionModule: 'MASTER_PRODUCTS' },
+      { title: 'Supplier', href: '/master/supplier' },
       { title: 'Sales Item', href: '/master/sales-item', permissionModule: 'MASTER_SALES_ITEM' },
       { title: 'Marka', href: '/master/marka', permissionModule: 'MASTER_MARKA' },
       { title: 'Party', href: '/master/party', permissionModule: 'MASTER_PARTIES' },
@@ -117,27 +118,33 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
   const [openItems, setOpenItems] = useState<string[]>([])
   const [allowedModules, setAllowedModules] = useState<Set<MenuPermissionModule> | null>(null)
 
-  const withCompany = (href?: string) => {
-    const path = href || '/main/dashboard'
-    if (!companyId) return path
-    return `${path}${path.includes('?') ? '&' : '?'}companyId=${companyId}`
+  const withCompany = (href?: string) => href || '/main/dashboard'
+
+  const syncActiveCompany = () => {
+    if (!companyId) return
+    void fetch('/api/auth/company', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ companyId, force: true })
+    })
   }
 
   useEffect(() => {
-    const controller = new AbortController()
+    let cancelled = false
 
     const fetchPermissions = async () => {
       try {
         const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}&includeMeta=true` : '?includeMeta=true'
-        const response = await fetch(`/api/auth/permissions${qs}`, {
-          signal: controller.signal
-        })
+        const response = await fetch(`/api/auth/permissions${qs}`, { cache: 'no-store' })
+        if (cancelled) return
         if (!response.ok) {
           setAllowedModules(null)
           return
         }
 
         const payload = await response.json().catch(() => ({}))
+        if (cancelled) return
         const permissions = Array.isArray(payload.permissions) ? payload.permissions : []
         const readableModules = permissions
           .filter((row: { module?: string; canRead?: boolean; canWrite?: boolean }) => row.canRead || row.canWrite)
@@ -145,13 +152,15 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
           .filter((module: unknown): module is MenuPermissionModule => typeof module === 'string')
         setAllowedModules(new Set(readableModules))
       } catch {
-        if (controller.signal.aborted) return
+        if (cancelled) return
         setAllowedModules(null)
       }
     }
 
     void fetchPermissions()
-    return () => controller.abort()
+    return () => {
+      cancelled = true
+    }
   }, [companyId])
 
   const hasChildAccess = (child: MenuChild) => {
@@ -201,7 +210,7 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
 
           if (!hasChildren) {
             return (
-              <Link key={item.title} href={withCompany(item.href)}>
+              <Link key={item.title} href={withCompany(item.href)} onClick={syncActiveCompany}>
                 <Button
                   variant={active ? 'secondary' : 'ghost'}
                   className={cn(
@@ -239,7 +248,7 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
                 <CollapsibleContent className="pl-4">
                   {item.children.map((child) => (
                     hasChildAccess(child) ? (
-                      <Link key={child.title} href={withCompany(child.href)}>
+                      <Link key={child.title} href={withCompany(child.href)} onClick={syncActiveCompany}>
                         <Button
                           variant={isActive(child.href) ? 'secondary' : 'ghost'}
                           size="sm"

@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Supplier {
   id: string
@@ -57,7 +58,7 @@ function SpecialPurchaseEditPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const billId = searchParams.get('billId')
-  const companyId = searchParams.get('companyId')
+  const [companyId, setCompanyId] = useState('')
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [products, setProducts] = useState<Product[]>([])
@@ -90,34 +91,68 @@ function SpecialPurchaseEditPageContent() {
     return String(Math.max(0, parsed))
   }
 
-  useEffect(() => {
-    if (billId && companyId) {
-      fetchData()
-    } else {
-      setLoading(false)
-      alert('Missing bill ID or company ID')
-      router.back()
+  const parseApiJson = async <T,>(response: Response, fallback: T): Promise<T> => {
+    const raw = await response.text()
+    if (!raw) return fallback
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      return fallback
     }
-  }, [billId, companyId])
+  }
 
-  const fetchData = async () => {
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!billId) {
+        setLoading(false)
+        alert('Missing bill ID')
+        router.back()
+        return
+      }
+
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (cancelled) return
+      if (!resolvedCompanyId) {
+        setLoading(false)
+        alert('Company not selected')
+        router.push('/company/select')
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchData(resolvedCompanyId, () => cancelled)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [billId, router])
+
+  const fetchData = async (targetCompanyId: string, isCancelled: () => boolean = () => false) => {
     try {
       // Fetch suppliers
-      const suppliersRes = await fetch(`/api/suppliers?companyId=${companyId}`)
-      const suppliersData = await suppliersRes.json()
+      const suppliersRes = await fetch(`/api/suppliers?companyId=${targetCompanyId}`)
+      const suppliersData = await parseApiJson<Supplier[]>(suppliersRes, [])
+      if (isCancelled()) return
       setSuppliers(suppliersData)
 
       // Fetch products
-      const productsRes = await fetch(`/api/products?companyId=${companyId}`)
-      const productsData = await productsRes.json()
+      const productsRes = await fetch(`/api/products?companyId=${targetCompanyId}`)
+      const productsData = await parseApiJson<Product[]>(productsRes, [])
+      if (isCancelled()) return
       setProducts(productsData)
 
       // Fetch special purchase bill
-      const billRes = await fetch(`/api/special-purchase-bills?companyId=${companyId}&billId=${billId}`)
+      const billRes = await fetch(`/api/special-purchase-bills?companyId=${targetCompanyId}&billId=${billId}`)
       if (!billRes.ok) {
         throw new Error('Special purchase bill not found')
       }
-      const billData: SpecialPurchaseBill = await billRes.json()
+      const billData = await parseApiJson<SpecialPurchaseBill | null>(billRes, null)
+      if (isCancelled()) return
+      if (!billData?.id) {
+        throw new Error('Special purchase bill not found')
+      }
       setPurchaseBill(billData)
 
       // Populate form with existing data
@@ -146,6 +181,7 @@ function SpecialPurchaseEditPageContent() {
 
       setLoading(false)
     } catch (error) {
+      if (isCancelled()) return
       console.error('Error fetching data:', error)
       setLoading(false)
       alert('Error loading special purchase bill')
@@ -256,7 +292,7 @@ function SpecialPurchaseEditPageContent() {
       }
 
       alert('Special purchase bill updated successfully!')
-      router.push(`/purchase/list?companyId=${companyId}`)
+      router.push('/purchase/list')
     } catch (error) {
       console.error('Error updating bill:', error)
       alert('Error updating special purchase bill')

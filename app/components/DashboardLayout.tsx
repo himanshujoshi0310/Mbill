@@ -14,6 +14,7 @@ interface DashboardLayoutProps {
 export default function DashboardLayout({ children, companyId }: DashboardLayoutProps) {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [currentUser, setCurrentUser] = useState<string | null>(null)
+  const [resolvedCompanyId, setResolvedCompanyId] = useState(companyId)
   const [currentCompanyName, setCurrentCompanyName] = useState<string | null>(null)
   const router = useRouter()
 
@@ -36,37 +37,67 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
     }
     
     checkAuth()
-  }, [])
+  }, [router])
 
   useEffect(() => {
-    const controller = new AbortController()
-    const loadCompanyName = async () => {
-      if (!companyId) {
+    let cancelled = false
+    const loadCompanyContext = async () => {
+      if (cancelled) return
+
+      let targetCompanyId = companyId?.trim() || ''
+      let targetCompanyName = ''
+
+      try {
+        const activeCompanyResponse = await fetch('/api/auth/company', { cache: 'no-store' })
+        if (!cancelled && activeCompanyResponse.ok) {
+          const activeData = await activeCompanyResponse.json().catch(() => null)
+          const activeCompany = activeData?.company
+          if (activeCompany?.id) {
+            if (!targetCompanyId) targetCompanyId = String(activeCompany.id)
+            if (String(activeCompany.id) === targetCompanyId) {
+              targetCompanyName = String(activeCompany.name || '')
+            }
+          }
+        }
+      } catch (error) {
+        if (cancelled || isAbortError(error)) return
+      }
+
+      if (!targetCompanyId) {
+        setResolvedCompanyId('')
         setCurrentCompanyName('Not selected')
         return
       }
 
       try {
-        const response = await fetch('/api/companies', { signal: controller.signal })
+        const response = await fetch('/api/companies')
+        if (cancelled) return
         if (!response.ok) {
-          setCurrentCompanyName(companyId)
+          setResolvedCompanyId(targetCompanyId)
+          setCurrentCompanyName(targetCompanyName || targetCompanyId)
           return
         }
         const companies = await response.json()
+        if (cancelled) return
         if (!Array.isArray(companies)) {
-          setCurrentCompanyName(companyId)
+          setResolvedCompanyId(targetCompanyId)
+          setCurrentCompanyName(targetCompanyName || targetCompanyId)
           return
         }
-        const currentCompany = companies.find((row) => String(row?.id) === companyId)
-        setCurrentCompanyName(currentCompany?.name || companyId)
+        const currentCompany = companies.find((row) => String(row?.id) === targetCompanyId)
+        setResolvedCompanyId(targetCompanyId)
+        setCurrentCompanyName(targetCompanyName || currentCompany?.name || targetCompanyId)
       } catch (error) {
-        if (isAbortError(error)) return
-        setCurrentCompanyName(companyId)
+        if (cancelled || isAbortError(error)) return
+        setResolvedCompanyId(targetCompanyId)
+        setCurrentCompanyName(targetCompanyName || targetCompanyId)
       }
     }
 
-    void loadCompanyName()
-    return () => controller.abort()
+    void loadCompanyContext()
+    return () => {
+      cancelled = true
+    }
   }, [companyId])
 
   const toggleSidebar = () => {
@@ -87,7 +118,7 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar
-        companyId={companyId}
+        companyId={resolvedCompanyId}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={toggleSidebar}
       />
@@ -105,7 +136,7 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
                 <span className="font-medium text-blue-600">{currentUser}</span>
                 <span className="text-gray-300">|</span>
                 <span className="text-sm text-gray-600">Company:</span>
-                <span className="font-medium text-slate-700">{currentCompanyName || companyId || 'Not selected'}</span>
+                <span className="font-medium text-slate-700">{currentCompanyName || resolvedCompanyId || companyId || 'Not selected'}</span>
                 <Button
                   variant="outline"
                   size="sm"

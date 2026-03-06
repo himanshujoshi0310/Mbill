@@ -12,8 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Eye, Edit, Trash2, Printer, FileText, Download, CreditCard } from 'lucide-react'
 import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
-import { resolveCompanyId } from '@/lib/company-context'
-import { isAbortError } from '@/lib/http'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Farmer {
   id: string
@@ -125,14 +124,19 @@ export default function PurchaseListPage() {
   const [purchaseType, setPurchaseType] = useState<'all' | 'regular' | 'special'>('all')
 
   useEffect(() => {
-    const controller = new AbortController()
-    void fetchPurchaseBills(controller.signal)
-    return () => controller.abort()
+    let cancelled = false
+    ;(async () => {
+      await fetchPurchaseBills(() => cancelled)
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const fetchPurchaseBills = async (signal?: AbortSignal) => {
+  const fetchPurchaseBills = async (isCancelled: () => boolean = () => false) => {
     try {
       const companyIdParam = await resolveCompanyId(window.location.search)
+      if (isCancelled()) return
 
       if (!companyIdParam) {
         alert('Company not selected')
@@ -141,6 +145,7 @@ export default function PurchaseListPage() {
       }
 
       setCompanyId(companyIdParam)
+      stripCompanyParamsFromUrl()
 
       const cacheKey = `purchase-bills:${companyIdParam}`
       const cached = getClientCache<PurchaseBill[]>(cacheKey, 15_000)
@@ -151,10 +156,10 @@ export default function PurchaseListPage() {
 
       // Fetch both regular and special purchase bills
       const [regularResponse, specialResponse] = await Promise.all([
-        fetch(`/api/purchase-bills?companyId=${companyIdParam}`, { signal }),
-        fetch(`/api/special-purchase-bills?companyId=${companyIdParam}`, { signal })
+        fetch(`/api/purchase-bills?companyId=${companyIdParam}`),
+        fetch(`/api/special-purchase-bills?companyId=${companyIdParam}`)
       ])
-      if (signal?.aborted) return
+      if (isCancelled()) return
 
       if (regularResponse.status === 401 || specialResponse.status === 401) {
         setLoading(false)
@@ -170,6 +175,7 @@ export default function PurchaseListPage() {
 
       const regularRaw = await regularResponse.json().catch(() => [])
       const specialRaw = await specialResponse.json().catch(() => [])
+      if (isCancelled()) return
       const regularData = Array.isArray(regularRaw) ? regularRaw : []
       const specialData = Array.isArray(specialRaw) ? specialRaw : []
 
@@ -218,7 +224,6 @@ export default function PurchaseListPage() {
       setClientCache(cacheKey, allBills)
       setLoading(false)
     } catch (error) {
-      if (isAbortError(error)) return
       console.error('Error fetching purchase bills:', error)
       setPurchaseBills([])
       setLoading(false)
@@ -343,22 +348,22 @@ export default function PurchaseListPage() {
 
   const handleView = (bill: PurchaseBill) => {
     if (bill.type === 'regular') {
-      router.push(`/purchase/view?billId=${bill.id}&companyId=${companyId}`)
+      router.push(`/purchase/view?billId=${bill.id}`)
     } else {
-      router.push(`/purchase/special-view?billId=${bill.id}&companyId=${companyId}`)
+      router.push(`/purchase/special-view?billId=${bill.id}`)
     }
   }
 
   const handleEdit = (bill: PurchaseBill) => {
     if (bill.type === 'regular') {
-      router.push(`/purchase/edit?billId=${bill.id}&companyId=${companyId}`)
+      router.push(`/purchase/edit?billId=${bill.id}`)
     } else {
-      router.push(`/purchase/special-edit?billId=${bill.id}&companyId=${companyId}`)
+      router.push(`/purchase/special-edit?billId=${bill.id}`)
     }
   }
 
   const handlePayment = (bill: PurchaseBill) => {
-    router.push(`/payment/purchase/entry?billId=${bill.id}&companyId=${companyId}`)
+    router.push(`/payment/purchase/entry?billId=${bill.id}`)
   }
 
   const handleDelete = (bill: PurchaseBill) => {

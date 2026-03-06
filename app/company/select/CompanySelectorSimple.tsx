@@ -38,7 +38,7 @@ export default function CompanySelector({ companies }: CompanySelectorProps) {
           return
         }
 
-        router.push(`/main/dashboard?companyId=${selectedCompany}&companyIds=${selectedCompany}`)
+        router.push('/main/dashboard')
       } catch (error) {
         console.error('Failed to set company context:', error)
         alert('Failed to select company')

@@ -4,14 +4,76 @@ import { prisma } from '@/lib/prisma'
 import { env } from '@/lib/config'
 import { normalizeAppRole } from '@/lib/api-security'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    return NextResponse.json({ success: true })
+    const authUser = await prisma.user.findFirst({
+      where: {
+        userId: session.userId,
+        traderId: session.traderId,
+        deletedAt: null
+      },
+      select: {
+        role: true,
+        companyId: true
+      }
+    })
+
+    if (!authUser) {
+      return NextResponse.json({ error: 'Invalid session user' }, { status: 401 })
+    }
+
+    const role = normalizeAppRole(authUser.role || session.role)
+    const isSuperAdmin = role === 'super_admin'
+    const cookieCompanyId = request.cookies.get('companyId')?.value?.trim() || ''
+
+    let company = cookieCompanyId
+      ? await prisma.company.findFirst({
+          where: isSuperAdmin
+            ? { id: cookieCompanyId, deletedAt: null }
+            : {
+                id: cookieCompanyId,
+                deletedAt: null,
+                OR: [{ traderId: session.traderId }, { traderId: null }]
+              },
+          select: { id: true, name: true }
+        })
+      : null
+
+    if ((role === 'company_admin' || role === 'company_user') && authUser.companyId) {
+      if (!company || company.id !== authUser.companyId) {
+        company = await prisma.company.findFirst({
+          where: { id: authUser.companyId, deletedAt: null },
+          select: { id: true, name: true }
+        })
+      }
+    }
+
+    if (!company) {
+      company = await prisma.company.findFirst({
+        where: isSuperAdmin
+          ? { deletedAt: null }
+          : {
+              deletedAt: null,
+              OR: [{ traderId: session.traderId }, { traderId: null }]
+            },
+        select: { id: true, name: true }
+      })
+    }
+
+    return NextResponse.json({
+      success: true,
+      company: company
+        ? {
+            id: company.id,
+            name: company.name
+          }
+        : null
+    })
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Internal server error' },

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,10 +10,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
-import { Eye, Plus, Minus, Download, FileText, TrendingUp, TrendingDown } from 'lucide-react'
+import { Eye, Plus, TrendingUp, TrendingDown } from 'lucide-react'
 import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
-import { resolveCompanyId } from '@/lib/company-context'
-import { isAbortError } from '@/lib/http'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Product {
   id: string
@@ -74,13 +73,7 @@ export default function StockDashboardPage() {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void fetchData(controller.signal)
-    return () => controller.abort()
-  }, [])
-
-  const fetchData = async (signal?: AbortSignal) => {
+  const fetchData = useCallback(async () => {
     try {
       const companyIdParam = await resolveCompanyId(window.location.search)
 
@@ -91,6 +84,7 @@ export default function StockDashboardPage() {
       }
 
       setCompanyId(companyIdParam)
+      stripCompanyParamsFromUrl()
       const productIdParam = new URLSearchParams(window.location.search).get('productId')?.trim() || ''
       if (productIdParam) {
         setFilterProduct(productIdParam)
@@ -106,10 +100,9 @@ export default function StockDashboardPage() {
 
       // Fetch products
       const [productsResponse, ledgerResponse] = await Promise.all([
-        fetch(`/api/products?companyId=${companyIdParam}`, { signal }),
-        fetch(`/api/stock-ledger?companyId=${companyIdParam}`, { signal })
+        fetch(`/api/products?companyId=${companyIdParam}`),
+        fetch(`/api/stock-ledger?companyId=${companyIdParam}`)
       ])
-      if (signal?.aborted) return
       if (productsResponse.status === 401 || ledgerResponse.status === 401) {
         setLoading(false)
         router.push('/login')
@@ -133,13 +126,19 @@ export default function StockDashboardPage() {
 
       setLoading(false)
     } catch (error) {
-      if (isAbortError(error)) return
       console.error('Error fetching data:', error)
       setProducts([])
       setStockLedger([])
       setLoading(false)
     }
-  }
+  }, [router])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void fetchData()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [fetchData])
 
   const stockSummary = useMemo(() => {
     const summary: { [key: string]: StockSummary } = {}
@@ -270,7 +269,7 @@ export default function StockDashboardPage() {
                 <Plus className="w-4 h-4 mr-2" />
                 Stock Adjustment
               </Button>
-              <Button variant="outline" onClick={() => router.push('/dashboard?companyId=' + companyId)}>
+              <Button variant="outline" onClick={() => router.push('/main/dashboard')}>
                 Back to Dashboard
               </Button>
             </div>
@@ -356,7 +355,7 @@ export default function StockDashboardPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => router.push(`/stock/dashboard?companyId=${companyId}&productId=${stock.productId}`)}
+                            onClick={() => router.push(`/stock/dashboard?productId=${stock.productId}`)}
                           >
                             <Eye className="w-4 h-4" />
                           </Button>

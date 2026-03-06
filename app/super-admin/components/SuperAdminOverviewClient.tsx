@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Building2, Lock, RefreshCw, Shield, Store, Unlock, Users } from 'lucide-react'
-import { isAbortError } from '@/lib/http'
 
 type SuperAdminOverviewClientProps = {
   initialStats: {
@@ -86,9 +85,9 @@ export default function SuperAdminOverviewClient({ initialStats }: SuperAdminOve
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const companiesAbortRef = useRef<AbortController | null>(null)
-  const usersAbortRef = useRef<AbortController | null>(null)
-  const permissionsAbortRef = useRef<AbortController | null>(null)
+  const companiesRequestRef = useRef(0)
+  const usersRequestRef = useRef(0)
+  const permissionsRequestRef = useRef(0)
   const graphContainerRef = useRef<HTMLDivElement | null>(null)
   const traderListRef = useRef<HTMLDivElement | null>(null)
   const companyListRef = useRef<HTMLDivElement | null>(null)
@@ -225,60 +224,55 @@ export default function SuperAdminOverviewClient({ initialStats }: SuperAdminOve
   }, [])
 
   const fetchCompanies = useCallback(async (traderId: string) => {
-    companiesAbortRef.current?.abort()
-    const controller = new AbortController()
-    companiesAbortRef.current = controller
+    const requestId = ++companiesRequestRef.current
     setLoadingCompanies(true)
     try {
-      const response = await fetch(`/api/super-admin/companies?traderId=${encodeURIComponent(traderId)}`, {
-        signal: controller.signal
-      })
+      const response = await fetch(`/api/super-admin/companies?traderId=${encodeURIComponent(traderId)}`)
       const payload = await response.json().catch(() => ({}))
+      if (requestId !== companiesRequestRef.current) return
       if (!response.ok) {
         throw new Error(payload.error || 'Failed to load companies')
       }
       setCompanies(Array.isArray(payload) ? payload : [])
     } catch (err) {
-      if (isAbortError(err)) return
+      if (requestId !== companiesRequestRef.current) return
       setError(err instanceof Error ? err.message : 'Failed to load companies')
     } finally {
-      setLoadingCompanies(false)
+      if (requestId === companiesRequestRef.current) {
+        setLoadingCompanies(false)
+      }
     }
   }, [])
 
   const fetchUsers = useCallback(async (companyId: string) => {
-    usersAbortRef.current?.abort()
-    const controller = new AbortController()
-    usersAbortRef.current = controller
+    const requestId = ++usersRequestRef.current
     setLoadingUsers(true)
     try {
-      const response = await fetch(`/api/super-admin/users?companyId=${encodeURIComponent(companyId)}`, {
-        signal: controller.signal
-      })
+      const response = await fetch(`/api/super-admin/users?companyId=${encodeURIComponent(companyId)}`)
       const payload = await response.json().catch(() => ({}))
+      if (requestId !== usersRequestRef.current) return
       if (!response.ok) {
         throw new Error(payload.error || 'Failed to load users')
       }
       setUsers(Array.isArray(payload) ? payload : [])
     } catch (err) {
-      if (isAbortError(err)) return
+      if (requestId !== usersRequestRef.current) return
       setError(err instanceof Error ? err.message : 'Failed to load users')
     } finally {
-      setLoadingUsers(false)
+      if (requestId === usersRequestRef.current) {
+        setLoadingUsers(false)
+      }
     }
   }, [])
 
   const fetchPermissionPreview = useCallback(async (userId: string, companyId?: string | null) => {
-    permissionsAbortRef.current?.abort()
-    const controller = new AbortController()
-    permissionsAbortRef.current = controller
+    const requestId = ++permissionsRequestRef.current
     setLoadingPermissions(true)
     try {
       const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''
-      const response = await fetch(`/api/super-admin/users/${userId}/permissions${qs}`, {
-        signal: controller.signal
-      })
+      const response = await fetch(`/api/super-admin/users/${userId}/permissions${qs}`)
       const payload = await response.json().catch(() => ({}))
+      if (requestId !== permissionsRequestRef.current) return
       if (!response.ok) {
         throw new Error(payload.error || 'Failed to load permission preview')
       }
@@ -286,20 +280,18 @@ export default function SuperAdminOverviewClient({ initialStats }: SuperAdminOve
         permissions: Array.isArray(payload.permissions) ? payload.permissions : []
       })
     } catch (err) {
-      if (isAbortError(err)) return
+      if (requestId !== permissionsRequestRef.current) return
       setError(err instanceof Error ? err.message : 'Failed to load permission preview')
     } finally {
-      setLoadingPermissions(false)
+      if (requestId === permissionsRequestRef.current) {
+        setLoadingPermissions(false)
+      }
     }
   }, [])
 
   useEffect(() => {
     void fetchTraders()
-    return () => {
-      companiesAbortRef.current?.abort()
-      usersAbortRef.current?.abort()
-      permissionsAbortRef.current?.abort()
-    }
+    return () => undefined
   }, [fetchTraders])
 
   useEffect(() => {

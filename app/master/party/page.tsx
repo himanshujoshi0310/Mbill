@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Plus, Edit, Trash2, Users } from 'lucide-react'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
+import { useRouter } from 'next/navigation'
 
 interface Party {
   id: string
@@ -25,6 +27,7 @@ interface Party {
 }
 
 export default function PartyMasterPage() {
+  const router = useRouter()
   const [parties, setParties] = useState<Party[]>([])
   const [filteredParties, setFilteredParties] = useState<Party[]>([])
   const [loading, setLoading] = useState(true)
@@ -47,19 +50,6 @@ export default function PartyMasterPage() {
   })
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const currentCompanyId = params.get('companyId') || ''
-    setCompanyId(currentCompanyId)
-    
-    if (currentCompanyId) {
-      fetchParties(currentCompanyId)
-    } else {
-      setLoading(false)
-      setMessage({ type: 'error', text: 'Company ID missing in URL. Please open from dashboard.' })
-    }
-  }, [])
-
-  useEffect(() => {
     const term = searchTerm.trim().toLowerCase()
     if (!term) {
       setFilteredParties(parties)
@@ -75,7 +65,7 @@ export default function PartyMasterPage() {
     setFilteredParties(filtered)
   }, [parties, searchTerm])
 
-  const fetchParties = async (id = companyId) => {
+  const fetchParties = useCallback(async (id = companyId) => {
     if (!id) return
 
     try {
@@ -96,7 +86,23 @@ export default function PartyMasterPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [companyId])
+
+  useEffect(() => {
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (!resolvedCompanyId) {
+        setLoading(false)
+        setMessage({ type: 'error', text: 'Failed to resolve active company. Please re-login or select company.' })
+        router.push('/company/select')
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchParties(resolvedCompanyId)
+    })()
+  }, [fetchParties, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

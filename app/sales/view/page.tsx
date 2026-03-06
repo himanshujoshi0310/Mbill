@@ -7,6 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { ArrowLeft, Edit, Trash2, Printer, FileText } from 'lucide-react'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
+import { isAbortError } from '@/lib/http'
 
 interface SalesBill {
   id: string
@@ -49,31 +51,44 @@ function SalesViewPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const billId = searchParams.get('billId')
-  const companyId = searchParams.get('companyId')
+  const [companyId, setCompanyId] = useState('')
 
   const [salesBill, setSalesBill] = useState<SalesBill | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (billId && companyId) {
-      fetchSalesBill()
-    } else {
-      setLoading(false)
-      alert('Missing bill ID or company ID')
-      router.back()
+    let cancelled = false
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (cancelled) return
+      if (!billId || !resolvedCompanyId) {
+        setLoading(false)
+        alert('Missing bill ID or company selection')
+        router.back()
+        return
+      }
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchSalesBill(resolvedCompanyId, () => cancelled)
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [billId, companyId])
+  }, [billId, router])
 
-  const fetchSalesBill = async () => {
+  const fetchSalesBill = async (targetCompanyId: string, isCancelled: () => boolean = () => false) => {
     try {
-      const response = await fetch(`/api/sales-bills?companyId=${companyId}&billId=${billId}`)
+      const response = await fetch(`/api/sales-bills?companyId=${targetCompanyId}&billId=${billId}`)
+      if (isCancelled()) return
       if (!response.ok) {
         throw new Error('Sales bill not found')
       }
       const billData: SalesBill = await response.json()
+      if (isCancelled()) return
       setSalesBill(billData)
       setLoading(false)
     } catch (error) {
+      if (isCancelled() || isAbortError(error)) return
       console.error('Error fetching sales bill:', error)
       setLoading(false)
       alert('Error loading sales bill')
@@ -82,7 +97,7 @@ function SalesViewPageContent() {
   }
 
   const handleEdit = () => {
-    router.push(`/sales/edit?billId=${billId}&companyId=${companyId}`)
+    router.push(`/sales/edit?billId=${billId}`)
   }
 
   const handleDelete = () => {
@@ -111,7 +126,7 @@ function SalesViewPageContent() {
 
       if (response.ok) {
         alert('Sales bill deleted successfully!')
-        router.push(`/sales/list?companyId=${companyId}`)
+        router.push('/sales/list')
       } else {
         const errorData = await response.json()
         alert('Error deleting sales bill: ' + (errorData.error || 'Unknown error'))

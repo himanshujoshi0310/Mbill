@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Plus, Trash2, Search } from 'lucide-react'
 import DashboardLayout from '@/app/components/DashboardLayout'
-import { isAbortError } from '@/lib/http'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Party {
   id: string
@@ -42,6 +42,7 @@ interface SalesItemMasterOption {
 export default function SalesEntryPage() {
   const router = useRouter()
   const itemIdSequence = useRef(0)
+  const [companyId, setCompanyId] = useState('')
   const [parties, setParties] = useState<Party[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -114,9 +115,7 @@ export default function SalesEntryPage() {
   }
 
   useEffect(() => {
-    const controller = new AbortController()
-    void fetchData(controller.signal)
-    return () => controller.abort()
+    void fetchData()
   }, [])
 
   useEffect(() => {
@@ -207,9 +206,6 @@ export default function SalesEntryPage() {
     }
 
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyId = urlParams.get('companyId')
-
       if (!companyId) {
         alert('Company ID not found. Please refresh the page.')
         return
@@ -261,30 +257,27 @@ export default function SalesEntryPage() {
   }
 
   const handleAddNewTransport = () => {
-    const urlParams = new URLSearchParams(window.location.search)
-    const companyId = urlParams.get('companyId')
-    router.push(`/master/transport?companyId=${companyId}`)
+    router.push('/master/transport')
   }
 
-  const fetchData = async (signal?: AbortSignal) => {
+  const fetchData = async () => {
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const companyId = urlParams.get('companyId')
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
 
-      if (!companyId) {
+      if (!resolvedCompanyId) {
         alert('Company not selected')
         router.push('/company/select')
         return
       }
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
 
       // Fetch parties, transports, and sales items
       const [partiesRes, transportsRes, salesItemsRes] = await Promise.all([
-        fetch(`/api/parties?companyId=${companyId}`, { signal }),
-        fetch(`/api/transports?companyId=${companyId}`, { signal }),
-        fetch(`/api/sales-item-masters?companyId=${companyId}`, { signal })
+        fetch(`/api/parties?companyId=${resolvedCompanyId}`),
+        fetch(`/api/transports?companyId=${resolvedCompanyId}`),
+        fetch(`/api/sales-item-masters?companyId=${resolvedCompanyId}`)
       ])
-
-      if (signal?.aborted) return
 
       if ([partiesRes, transportsRes, salesItemsRes].some((res) => res.status === 401 || res.status === 403)) {
         alert('Session expired. Please login again.')
@@ -304,8 +297,7 @@ export default function SalesEntryPage() {
       setSalesItems(Array.isArray(salesItemsData) ? salesItemsData : [])
 
       // Generate next invoice number
-      const billsRes = await fetch(`/api/sales-bills?companyId=${companyId}&last=true`, { signal })
-      if (signal?.aborted) return
+      const billsRes = await fetch(`/api/sales-bills?companyId=${resolvedCompanyId}&last=true`)
       if (!billsRes.ok) {
         setInvoiceNo('1')
         setLoading(false)
@@ -318,7 +310,6 @@ export default function SalesEntryPage() {
       
       setLoading(false)
     } catch (error) {
-      if (isAbortError(error)) return
       console.error('Error fetching data:', error)
       setLoading(false)
     }
@@ -450,8 +441,7 @@ export default function SalesEntryPage() {
     }
     
     try {
-      const urlParams = new URLSearchParams(window.location.search)
-      const firmId = urlParams.get('companyId') // Using companyId as firmId for now
+      const firmId = companyId
 
       // Validate required fields
       if (!firmId) {
@@ -511,7 +501,7 @@ export default function SalesEntryPage() {
 
       if (response.ok) {
         alert('Sales bill created successfully!')
-        router.push('/sales/list?companyId=' + companyId)
+        router.push('/sales/list')
       } else {
         let errorData
         try {
@@ -536,14 +526,11 @@ export default function SalesEntryPage() {
 
   if (loading) {
     return (
-      <DashboardLayout companyId="">
+      <DashboardLayout companyId={companyId}>
         <div className="flex justify-center items-center h-screen">Loading...</div>
       </DashboardLayout>
     )
   }
-
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
 
   return (
     <DashboardLayout companyId={companyId}>

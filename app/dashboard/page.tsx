@@ -11,5 +11,5 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     redirect('/main/dashboard')
   }
 
-  redirect(`/main/dashboard?companyId=${encodeURIComponent(companyId)}&companyIds=${encodeURIComponent(companyId)}`)
+  redirect('/main/dashboard')
 }

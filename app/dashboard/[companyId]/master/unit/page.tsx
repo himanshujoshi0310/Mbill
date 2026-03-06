@@ -52,13 +52,10 @@ export default function DashboardUnitPage({ params }: DashboardUnitPageProps) {
 
   const fetchUnits = async (companyId: string) => {
     try {
-      console.log('Fetching units for company:', companyId)
       const response = await fetch(`/api/units?companyId=${companyId}`)
-      console.log('Units response status:', response.status)
       
       if (response.ok) {
         const data = await response.json()
-        console.log('Units data:', data)
         setUnits(data)
       } else if (response.status === 401) {
         // Token expired or invalid - redirect to login

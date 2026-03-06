@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Product {
   id: string
@@ -58,7 +59,7 @@ function PurchaseEditPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const billId = searchParams.get('billId')
-  const companyId = searchParams.get('companyId')
+  const [companyId, setCompanyId] = useState('')
 
   const [products, setProducts] = useState<Product[]>([])
   const [purchaseBill, setPurchaseBill] = useState<PurchaseBill | null>(null)
@@ -87,29 +88,63 @@ function PurchaseEditPageContent() {
     return String(Math.max(0, parsed))
   }
 
-  useEffect(() => {
-    if (billId && companyId) {
-      fetchData()
-    } else {
-      setLoading(false)
-      alert('Missing bill ID or company ID')
-      router.back()
+  const parseApiJson = async <T,>(response: Response, fallback: T): Promise<T> => {
+    const raw = await response.text()
+    if (!raw) return fallback
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      return fallback
     }
-  }, [billId, companyId])
+  }
 
-  const fetchData = async () => {
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!billId) {
+        setLoading(false)
+        alert('Missing bill ID')
+        router.back()
+        return
+      }
+
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (cancelled) return
+      if (!resolvedCompanyId) {
+        setLoading(false)
+        alert('Company not selected')
+        router.push('/company/select')
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchData(resolvedCompanyId, () => cancelled)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [billId, router])
+
+  const fetchData = async (targetCompanyId: string, isCancelled: () => boolean = () => false) => {
     try {
       // Fetch products
-      const productsRes = await fetch(`/api/products?companyId=${companyId}`)
-      const productsData = await productsRes.json()
+      const productsRes = await fetch(`/api/products?companyId=${targetCompanyId}`)
+      const productsData = await parseApiJson<Product[]>(productsRes, [])
+      if (isCancelled()) return
       setProducts(productsData)
 
       // Fetch purchase bill
-      const billRes = await fetch(`/api/purchase-bills?companyId=${companyId}&billId=${billId}`)
+      const billRes = await fetch(`/api/purchase-bills?companyId=${targetCompanyId}&billId=${billId}`)
       if (!billRes.ok) {
         throw new Error('Purchase bill not found')
       }
-      const billData: PurchaseBill = await billRes.json()
+      const billData = await parseApiJson<PurchaseBill | null>(billRes, null)
+      if (isCancelled()) return
+      if (!billData?.id) {
+        throw new Error('Purchase bill not found')
+      }
       setPurchaseBill(billData)
 
       // Populate form with existing data
@@ -135,6 +170,7 @@ function PurchaseEditPageContent() {
 
       setLoading(false)
     } catch (error) {
+      if (isCancelled()) return
       console.error('Error fetching data:', error)
       setLoading(false)
       alert('Error loading purchase bill')
@@ -256,7 +292,7 @@ function PurchaseEditPageContent() {
       }
 
       alert('Purchase bill updated successfully!')
-      router.push(`/purchase/list?companyId=${companyId}`)
+      router.push('/purchase/list')
     } catch (error) {
       console.error('Error updating bill:', error)
       alert('Error updating purchase bill')

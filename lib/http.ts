@@ -30,6 +30,18 @@ export function isAbortError(error: unknown): boolean {
     }
   }
 
+  if (typeof (error as { toString?: () => string }).toString === 'function') {
+    const text = String((error as { toString: () => string }).toString()).toLowerCase()
+    if (text.includes('aborted') || text.includes('aborterror')) {
+      return true
+    }
+  }
+
+  const reason = (candidate as { reason?: unknown })?.reason
+  if (reason && reason !== error) {
+    return isAbortError(reason)
+  }
+
   const cause = candidate?.cause as unknown
   if (cause && cause !== error) {
     return isAbortError(cause)

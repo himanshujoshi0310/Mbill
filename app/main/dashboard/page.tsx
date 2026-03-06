@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState, Suspense } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -29,7 +29,7 @@ import StockManagementTab from './components/StockManagementTab'
 import PaymentTab from './components/PaymentTab'
 import ReportsTab from './components/ReportsTab'
 import { getClientCache, setClientCache } from '@/lib/client-fetch-cache'
-import { isAbortError } from '@/lib/http'
+import { stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 type ActiveTab = 'purchase' | 'sales' | 'stock' | 'payment' | 'report'
 const DASHBOARD_CACHE_AGE_MS = 15_000
@@ -118,21 +118,7 @@ const clampNonNegative = (value: number): number => {
 }
 
 export default function MainDashboardPage() {
-  return (
-    <Suspense fallback={<div>Loading...</div>}>
-      <MainDashboardPageContent />
-    </Suspense>
-  )
-}
-
-function MainDashboardPageContent() {
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const queryCompanyId = searchParams.get('companyId') || ''
-  const queryCompanyIds = (searchParams.get('companyIds') || '')
-    .split(',')
-    .map((id) => id.trim())
-    .filter(Boolean)
   const [activeTab, setActiveTab] = useState<ActiveTab>('purchase')
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<DashboardData>(emptyData)
@@ -147,8 +133,22 @@ function MainDashboardPageContent() {
     return selectedCompanyIds.map((id) => map.get(id) || id)
   }, [companies, selectedCompanyIds])
 
-  const loadCompanies = async (signal?: AbortSignal) => {
-    const res = await fetch('/api/companies', { signal })
+  const parseApiJson = async <T,>(response: Response, fallback: T): Promise<T> => {
+    const raw = await response.text()
+    if (!raw) return fallback
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      return fallback
+    }
+  }
+
+  useEffect(() => {
+    stripCompanyParamsFromUrl()
+  }, [])
+
+  const loadCompanies = async () => {
+    const res = await fetch('/api/companies')
     if (!res.ok) {
       if (res.status === 401) {
         router.push('/login')
@@ -163,7 +163,11 @@ function MainDashboardPageContent() {
       }
       return []
     }
-    const rows = await res.json()
+    const contentType = res.headers.get('content-type') || ''
+    if (!contentType.includes('application/json')) {
+      return []
+    }
+    const rows = await parseApiJson<any[]>(res, [])
     return Array.isArray(rows)
       ? rows.map((row) => ({
           id: String(row.id),
@@ -173,7 +177,7 @@ function MainDashboardPageContent() {
       : []
   }
 
-  const fetchDashboardData = async (companyIds: string[], signal?: AbortSignal) => {
+  const fetchDashboardData = async (companyIds: string[]) => {
     if (companyIds.length === 0) {
       setData(emptyData)
       setFetchFailures([])
@@ -183,7 +187,7 @@ function MainDashboardPageContent() {
     const companyNameMap = new Map(companies.map((item) => [item.id, item.name]))
     const fetchJson = async <T,>(name: string, url: string): Promise<T> => {
       try {
-        const res = await fetch(url, { signal })
+        const res = await fetch(url)
         if (!res.ok) {
           failures.push(name)
           return [] as T
@@ -236,10 +240,18 @@ function MainDashboardPageContent() {
   }
 
   useEffect(() => {
-    const controller = new AbortController()
+    let cancelled = false
     ;(async () => {
+      const queryParams = new URLSearchParams(window.location.search)
+      const queryCompanyId = queryParams.get('companyId') || ''
+      const queryCompanyIds = (queryParams.get('companyIds') || '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean)
+
       try {
-        const list: CompanyOption[] = await loadCompanies(controller.signal)
+        const list: CompanyOption[] = await loadCompanies()
+        if (cancelled) return
         setCompanies(list)
 
         const availableIds = new Set(list.map((item) => item.id))
@@ -260,9 +272,8 @@ function MainDashboardPageContent() {
         setSelectedCompanyIds(nextSelected)
         setPrimaryCompanyId(nextPrimary)
       } catch (error) {
-        if (isAbortError(error)) {
-          return
-        }
+        if (cancelled) return
+        void error
         if (queryCompanyId) {
           setCompanies([{ id: queryCompanyId, name: 'Current Company' }])
           setSelectedCompanyIds([queryCompanyId])
@@ -271,11 +282,14 @@ function MainDashboardPageContent() {
           setUiError('Failed to load company list')
         }
       } finally {
+        if (cancelled) return
         setLoading(false)
       }
     })()
-    return () => controller.abort()
-  }, [queryCompanyId, queryCompanyIds.join(',')])
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (selectedCompanyIds.length === 0) return
@@ -294,35 +308,52 @@ function MainDashboardPageContent() {
       setLoading(false)
     }
 
-    const nextParams = new URLSearchParams(searchParams.toString())
-    nextParams.set('companyId', primary)
-    nextParams.set('companyIds', selectedCompanyIds.join(','))
-    const nextUrl = `/main/dashboard?${nextParams.toString()}`
-    if (nextUrl !== `/main/dashboard?${searchParams.toString()}`) {
-      router.replace(nextUrl)
-    }
+    stripCompanyParamsFromUrl()
 
-    const controller = new AbortController()
+    let cancelled = false
     ;(async () => {
       setLoading(true)
       try {
-        await fetchDashboardData(selectedCompanyIds, controller.signal)
+        await fetchDashboardData(selectedCompanyIds)
       } finally {
+        if (cancelled) return
         setLoading(false)
       }
     })()
 
-    return () => controller.abort()
+    return () => {
+      cancelled = true
+    }
   }, [selectedCompanyIds.join(','), primaryCompanyId, companies])
 
-  const handleNavigation = (path: string) => {
+  useEffect(() => {
+    if (!primaryCompanyId) return
+    void fetch('/api/auth/company', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ companyId: primaryCompanyId, force: true })
+    })
+  }, [primaryCompanyId])
+
+  const handleNavigation = async (path: string) => {
     if (!primaryCompanyId) return
     const primaryCompany = companies.find((item) => item.id === primaryCompanyId)
     if (primaryCompany?.locked) {
       setUiError(`"${primaryCompany.name}" is locked by Super Admin. Switch active company to continue.`)
       return
     }
-    router.push(`${path}?companyId=${primaryCompanyId}`)
+
+    try {
+      await fetch('/api/auth/company', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companyId: primaryCompanyId, force: true })
+      })
+    } catch (error) {
+      void error
+    }
+
+    router.push(path)
   }
 
   const purchaseStats = useMemo(() => {
