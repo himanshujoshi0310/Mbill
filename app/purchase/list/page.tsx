@@ -405,7 +405,14 @@ export default function PurchaseListPage() {
   }
 
   const handlePrint = (bill: PurchaseBill) => {
-    void bill
+    if (bill.type === 'regular') {
+      const printPath = companyId
+        ? `/purchase/${bill.id}/print?companyId=${encodeURIComponent(companyId)}`
+        : `/purchase/${bill.id}/print`
+      router.push(printPath)
+      return
+    }
+    router.push(`/purchase/special-view?billId=${bill.id}`)
   }
 
   const getBillWeightQt = (bill: PurchaseBill) => {
@@ -753,7 +760,7 @@ export default function PurchaseListPage() {
                       <TableCell>
                         <Badge variant={
                           bill.status === 'paid' ? 'default' :
-                          bill.status === 'partially_paid' ? 'secondary' : 'destructive'
+                          (bill.status === 'partial' || bill.status === 'partially_paid') ? 'secondary' : 'destructive'
                         }>
                           {bill.status}
                         </Badge>

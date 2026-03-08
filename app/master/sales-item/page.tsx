@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Plus, Edit, Trash2, Package } from 'lucide-react'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface SalesItem {
   id: string
@@ -34,13 +34,21 @@ interface SalesItem {
   updatedAt: string
 }
 
+interface ProductOption {
+  id: string
+  name: string
+  unit?: {
+    symbol?: string
+  }
+}
+
 export default function SalesItemMasterPage() {
-  const router = useRouter()
+  const [companyId, setCompanyId] = useState('')
   const [salesItems, setSalesItems] = useState<SalesItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingSalesItem, setEditingSalesItem] = useState<SalesItem | null>(null)
-  const [searchParams, setSearchParams] = useState<URLSearchParams>()
 
   // Form state
   const [formData, setFormData] = useState({
@@ -53,47 +61,56 @@ export default function SalesItemMasterPage() {
     isActive: true
   })
 
-  const [products, setProducts] = useState<any[]>([])
+  const [products, setProducts] = useState<ProductOption[]>([])
   const gstRates = ['5', '12', '18', '28']
-
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    setSearchParams(params)
-    const companyId = params.get('companyId')
-    
-    if (companyId) {
-      fetchSalesItems()
-      fetchProducts()
-    }
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (!resolvedCompanyId) {
+        setErrorMessage('Failed to resolve active company. Please re-login.')
+        setLoading(false)
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await Promise.all([fetchSalesItems(resolvedCompanyId), fetchProducts(resolvedCompanyId)])
+    })()
   }, [])
 
-  const fetchProducts = async () => {
+  const fetchProducts = async (targetCompanyId = companyId) => {
+    if (!targetCompanyId) return
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/products?companyId=${companyId}`)
+      const response = await fetch(`/api/products?companyId=${encodeURIComponent(targetCompanyId)}`)
       if (response.ok) {
         const data = await response.json()
         setProducts(data)
+      } else {
+        setProducts([])
       }
     } catch (error) {
       console.error('Error fetching products:', error)
+      setProducts([])
     }
   }
 
-  const fetchSalesItems = async () => {
+  const fetchSalesItems = async (targetCompanyId = companyId) => {
+    if (!targetCompanyId) {
+      setLoading(false)
+      return
+    }
+
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/sales-item-masters?companyId=${companyId}`)
+      const response = await fetch(`/api/sales-item-masters?companyId=${encodeURIComponent(targetCompanyId)}`)
       if (response.ok) {
         const data = await response.json()
         setSalesItems(data)
+      } else {
+        setSalesItems([])
       }
     } catch (error) {
       console.error('Error fetching sales items:', error)
+      setSalesItems([])
     } finally {
       setLoading(false)
     }
@@ -106,11 +123,12 @@ export default function SalesItemMasterPage() {
       alert('Product selection and Sales Item Name are required')
       return
     }
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const url = editingSalesItem 
         ? `/api/sales-item-masters?id=${editingSalesItem.id}&companyId=${companyId}`
         : `/api/sales-item-masters?companyId=${companyId}`
@@ -160,11 +178,12 @@ export default function SalesItemMasterPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this sales item? This may affect existing transactions.')) return
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const response = await fetch(`/api/sales-item-masters?id=${id}&companyId=${companyId}`, {
         method: 'DELETE',
       })
@@ -204,13 +223,15 @@ export default function SalesItemMasterPage() {
     )
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
-
   return (
     <DashboardLayout companyId={companyId}>
       <div className="p-6">
         <div className="max-w-6xl mx-auto">
+          {errorMessage && (
+            <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          )}
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-3">
               <Package className="h-8 w-8 text-teal-600" />

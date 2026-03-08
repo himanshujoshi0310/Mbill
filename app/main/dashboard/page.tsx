@@ -148,7 +148,7 @@ export default function MainDashboardPage() {
   }, [])
 
   const loadCompanies = async () => {
-    const res = await fetch('/api/companies')
+    const res = await fetch('/api/companies', { cache: 'no-store' })
     if (!res.ok) {
       if (res.status === 401) {
         router.push('/login')

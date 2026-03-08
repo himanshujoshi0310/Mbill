@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -10,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Plus, Edit, Trash2, Building } from 'lucide-react'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Bank {
   id: string
@@ -25,12 +25,12 @@ interface Bank {
 }
 
 export default function BankMasterPage() {
-  const router = useRouter()
+  const [companyId, setCompanyId] = useState('')
   const [banks, setBanks] = useState<Bank[]>([])
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingBank, setEditingBank] = useState<Bank | null>(null)
-  const [searchParams, setSearchParams] = useState<URLSearchParams>()
 
   // Form state
   const [formData, setFormData] = useState({
@@ -42,29 +42,37 @@ export default function BankMasterPage() {
     phone: '',
     isActive: true
   })
-
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    setSearchParams(params)
-    const companyId = params.get('companyId')
-    
-    if (companyId) {
-      fetchBanks()
-    }
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (!resolvedCompanyId) {
+        setErrorMessage('Failed to resolve active company. Please re-login.')
+        setLoading(false)
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchBanks(resolvedCompanyId)
+    })()
   }, [])
 
-  const fetchBanks = async () => {
+  const fetchBanks = async (targetCompanyId = companyId) => {
+    if (!targetCompanyId) {
+      setLoading(false)
+      return
+    }
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/banks?companyId=${companyId}`)
+      const response = await fetch(`/api/banks?companyId=${encodeURIComponent(targetCompanyId)}`)
       if (response.ok) {
         const data = await response.json()
         setBanks(data)
+      } else {
+        setBanks([])
       }
     } catch (error) {
       console.error('Error fetching banks:', error)
+      setBanks([])
     } finally {
       setLoading(false)
     }
@@ -77,6 +85,10 @@ export default function BankMasterPage() {
       alert('Bank name and IFSC code are required')
       return
     }
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     // Validate IFSC code format
     if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(formData.ifscCode)) {
@@ -85,9 +97,6 @@ export default function BankMasterPage() {
     }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const url = editingBank 
         ? `/api/banks?id=${editingBank.id}&companyId=${companyId}`
         : `/api/banks?companyId=${companyId}`
@@ -132,11 +141,12 @@ export default function BankMasterPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this bank? This may affect existing transactions.')) return
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const response = await fetch(`/api/banks?id=${id}&companyId=${companyId}`, {
         method: 'DELETE',
       })
@@ -156,10 +166,12 @@ export default function BankMasterPage() {
 
   const handleDeleteAll = async () => {
     if (!confirm('Delete all banks for this company?')) return
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
     const response = await fetch(`/api/banks?companyId=${companyId}&all=true`, { method: 'DELETE' })
-    const result = await response.json()
+    const result = await response.json().catch(() => ({}))
     alert(result.message || result.error || 'Operation completed')
     if (response.ok) fetchBanks()
   }
@@ -200,13 +212,15 @@ export default function BankMasterPage() {
     )
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
-
   return (
     <DashboardLayout companyId={companyId}>
       <div className="p-6">
         <div className="max-w-6xl mx-auto">
+          {errorMessage && (
+            <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          )}
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-3">
               <Building className="h-8 w-8 text-green-600" />

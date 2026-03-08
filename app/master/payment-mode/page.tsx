@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -10,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Plus, Edit, Trash2, CreditCard } from 'lucide-react'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface PaymentMode {
   id: string
@@ -22,12 +22,12 @@ interface PaymentMode {
 }
 
 export default function PaymentModeMasterPage() {
-  const router = useRouter()
+  const [companyId, setCompanyId] = useState('')
   const [paymentModes, setPaymentModes] = useState<PaymentMode[]>([])
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingPaymentMode, setEditingPaymentMode] = useState<PaymentMode | null>(null)
-  const [searchParams, setSearchParams] = useState<URLSearchParams>()
 
   // Form state
   const [formData, setFormData] = useState({
@@ -36,29 +36,38 @@ export default function PaymentModeMasterPage() {
     description: '',
     isActive: true
   })
-
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    setSearchParams(params)
-    const companyId = params.get('companyId')
-    
-    if (companyId) {
-      fetchPaymentModes()
-    }
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (!resolvedCompanyId) {
+        setErrorMessage('Failed to resolve active company. Please re-login.')
+        setLoading(false)
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchPaymentModes(resolvedCompanyId)
+    })()
   }, [])
 
-  const fetchPaymentModes = async () => {
+  const fetchPaymentModes = async (targetCompanyId = companyId) => {
+    if (!targetCompanyId) {
+      setLoading(false)
+      return
+    }
+
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/payment-modes?companyId=${companyId}`)
+      const response = await fetch(`/api/payment-modes?companyId=${encodeURIComponent(targetCompanyId)}`)
       if (response.ok) {
         const data = await response.json()
         setPaymentModes(data)
+      } else {
+        setPaymentModes([])
       }
     } catch (error) {
       console.error('Error fetching payment modes:', error)
+      setPaymentModes([])
     } finally {
       setLoading(false)
     }
@@ -71,11 +80,12 @@ export default function PaymentModeMasterPage() {
       alert('Payment mode name and code are required')
       return
     }
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const url = editingPaymentMode 
         ? `/api/payment-modes?id=${editingPaymentMode.id}&companyId=${companyId}`
         : `/api/payment-modes?companyId=${companyId}`
@@ -117,11 +127,12 @@ export default function PaymentModeMasterPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this payment mode? This may affect existing transactions.')) return
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const response = await fetch(`/api/payment-modes?id=${id}&companyId=${companyId}`, {
         method: 'DELETE',
       })
@@ -141,10 +152,12 @@ export default function PaymentModeMasterPage() {
 
   const handleDeleteAll = async () => {
     if (!confirm('Delete all payment modes for this company?')) return
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
     const response = await fetch(`/api/payment-modes?companyId=${companyId}&all=true`, { method: 'DELETE' })
-    const result = await response.json()
+    const result = await response.json().catch(() => ({}))
     alert(result.message || result.error || 'Operation completed')
     if (response.ok) fetchPaymentModes()
   }
@@ -177,13 +190,15 @@ export default function PaymentModeMasterPage() {
     )
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
-
   return (
     <DashboardLayout companyId={companyId}>
       <div className="p-6">
         <div className="max-w-6xl mx-auto">
+          {errorMessage && (
+            <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          )}
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-3">
               <CreditCard className="h-8 w-8 text-blue-600" />

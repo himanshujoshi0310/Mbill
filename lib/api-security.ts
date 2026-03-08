@@ -193,11 +193,6 @@ async function hasModulePermission(
   })
 
   if (!permission) {
-    // Backward-compatible behavior: admin roles keep access even when explicit
-    // module rows are not yet provisioned in UserPermission table.
-    if (auth.role === 'trader_admin' || auth.role === 'company_admin') {
-      return true
-    }
     return false
   }
 

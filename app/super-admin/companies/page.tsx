@@ -18,6 +18,7 @@ type Company = {
   traderId: string | null
   address?: string | null
   phone?: string | null
+  mandiAccountNumber?: string | null
   createdAt: string
   trader?: Trader | null
 }
@@ -33,7 +34,8 @@ export default function SuperAdminCompaniesPage() {
     name: '',
     traderId: '',
     address: '',
-    phone: ''
+    phone: '',
+    mandiAccountNumber: ''
   })
 
   const loadData = async () => {
@@ -64,7 +66,7 @@ export default function SuperAdminCompaniesPage() {
   const resetForm = () => {
     setIsCreating(false)
     setEditingId(null)
-    setFormData({ name: '', traderId: '', address: '', phone: '' })
+    setFormData({ name: '', traderId: '', address: '', phone: '', mandiAccountNumber: '' })
   }
 
   const startEdit = (company: Company) => {
@@ -74,7 +76,8 @@ export default function SuperAdminCompaniesPage() {
       name: company.name,
       traderId: company.traderId || '',
       address: company.address || '',
-      phone: company.phone || ''
+      phone: company.phone || '',
+      mandiAccountNumber: company.mandiAccountNumber || ''
     })
   }
 
@@ -87,7 +90,8 @@ export default function SuperAdminCompaniesPage() {
         name: formData.name.trim(),
         traderId: formData.traderId,
         address: formData.address.trim() || undefined,
-        phone: formData.phone.trim() || undefined
+        phone: formData.phone.trim() || undefined,
+        mandiAccountNumber: formData.mandiAccountNumber.trim() || undefined
       }
 
       if (!body.name || !body.traderId) {
@@ -180,6 +184,14 @@ export default function SuperAdminCompaniesPage() {
                 <Label htmlFor="phone">Phone</Label>
                 <Input id="phone" value={formData.phone} onChange={(e) => setFormData((p) => ({ ...p, phone: e.target.value }))} />
               </div>
+              <div>
+                <Label htmlFor="mandiAccountNumber">Mandi Account Number</Label>
+                <Input
+                  id="mandiAccountNumber"
+                  value={formData.mandiAccountNumber}
+                  onChange={(e) => setFormData((p) => ({ ...p, mandiAccountNumber: e.target.value }))}
+                />
+              </div>
               <div className="md:col-span-2 flex justify-end gap-2">
                 <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>
                 <Button type="submit">{editingId ? 'Update' : 'Create'}</Button>
@@ -202,6 +214,7 @@ export default function SuperAdminCompaniesPage() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                 <TableHead>Trader</TableHead>
+                <TableHead>Mandi Account</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Details</TableHead>
@@ -213,6 +226,7 @@ export default function SuperAdminCompaniesPage() {
                 <TableRow key={company.id}>
                   <TableCell className="font-medium">{company.name}</TableCell>
                   <TableCell>{company.trader?.name || '-'}</TableCell>
+                  <TableCell>{company.mandiAccountNumber || '-'}</TableCell>
                   <TableCell>{company.phone || '-'}</TableCell>
                   <TableCell>{new Date(company.createdAt).toLocaleDateString()}</TableCell>
                   <TableCell>
@@ -238,7 +252,7 @@ export default function SuperAdminCompaniesPage() {
                 ))}
                 {companies.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-sm text-gray-500">No companies found</TableCell>
+                    <TableCell colSpan={7} className="text-center text-sm text-gray-500">No companies found</TableCell>
                   </TableRow>
                 )}
               </TableBody>

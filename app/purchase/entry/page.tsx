@@ -54,6 +54,7 @@ export default function PurchaseEntryPage() {
   const [paidAmount, setPaidAmount] = useState('')
   const [balance, setBalance] = useState('')
   const [paidAmountError, setPaidAmountError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const [billNumber, setBillNumber] = useState('')
   const [lastBillNumber, setLastBillNumber] = useState(0)
   const toNonNegative = (value: string) => {
@@ -225,9 +226,8 @@ export default function PurchaseEntryPage() {
     setWeight(totalQt.toString())
   }, [noOfBags, selectedUserUnit, userUnits])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
+  const submitPurchase = async (printAfterSave = false) => {
+    if (submitting) return
     // Basic validation
     if (!farmerName || !selectedProduct || !weight || !rate || !billNumber) {
       alert('Please fill all required fields and wait for bill number to load')
@@ -249,16 +249,17 @@ export default function PurchaseEntryPage() {
     }
 
     // Determine payment status
-    let paymentStatus = 'unpaid'
+    let status = 'unpaid'
     if (paid > 0) {
       if (paid === payable) {
-        paymentStatus = 'paid'
+        status = 'paid'
       } else {
-        paymentStatus = 'partially_paid'
+        status = 'partial'
       }
     }
 
     try {
+      setSubmitting(true)
       const companyId = await resolveCompanyId(window.location.search)
       if (!companyId) {
         alert('Company not selected')
@@ -283,8 +284,7 @@ export default function PurchaseEntryPage() {
         payableAmount: Math.max(0, parseFloat(payableAmount) || 0),
         paidAmount: Math.max(0, parseFloat(paidAmount) || 0),
         balance: Math.max(0, parseFloat(balance) || 0),
-        paymentStatus,
-        userUnitId: selectedUserUnit || null,
+        status,
         userUnitName: userUnits.find((u) => u.id === selectedUserUnit)?.name || null,
         kgEquivalent: userUnits.find((u) => u.id === selectedUserUnit)?.kgEquivalent || null,
         totalWeightQt: parseFloat(weight) || 0
@@ -301,14 +301,23 @@ export default function PurchaseEntryPage() {
       const responseData = await response.json()
 
       if (response.ok) {
+        if (printAfterSave && responseData?.id) {
+          const printPath = companyId
+            ? `/purchase/${responseData.id}/print?companyId=${encodeURIComponent(companyId)}`
+            : `/purchase/${responseData.id}/print`
+          router.push(printPath)
+          return
+        }
         alert('Purchase bill created successfully!')
-        router.push('/main/dashboard')
+        router.push('/purchase/list')
       } else {
         alert('Error creating purchase bill: ' + (responseData.error || 'Unknown error'))
       }
     } catch (error) {
       console.error('Error:', error)
       alert('Error creating purchase bill: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -330,7 +339,13 @@ export default function PurchaseEntryPage() {
               <CardTitle className="text-2xl font-bold">Purchase Entry</CardTitle>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-6">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  void submitPurchase(false)
+                }}
+                className="space-y-6"
+              >
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {/* Bill Number */}
                   <div>
@@ -556,7 +571,12 @@ export default function PurchaseEntryPage() {
                   <Button type="button" variant="outline" onClick={() => router.back()}>
                     Cancel
                   </Button>
-                  <Button type="submit">Save Purchase Bill</Button>
+                  <Button type="button" variant="outline" disabled={submitting} onClick={() => void submitPurchase(true)}>
+                    Save & Print
+                  </Button>
+                  <Button type="submit" disabled={submitting}>
+                    {submitting ? 'Saving...' : 'Save Purchase Bill'}
+                  </Button>
                 </div>
               </form>
             </CardContent>

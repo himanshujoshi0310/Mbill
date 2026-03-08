@@ -15,6 +15,7 @@ import {
   getDefaultPurchaseProductId,
   setDefaultPurchaseProductId
 } from '@/lib/default-product'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Product {
   id: string
@@ -38,9 +39,11 @@ interface Unit {
 }
 
 export default function ProductMasterPage() {
+  const [companyId, setCompanyId] = useState('')
   const [products, setProducts] = useState<Product[]>([])
   const [units, setUnits] = useState<Unit[]>([])
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [defaultPurchaseProductId, setDefaultPurchaseProductIdState] = useState('')
@@ -58,56 +61,66 @@ export default function ProductMasterPage() {
   })
 
   const gstRates = ['0', '5', '12', '18', '28']
-
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
-    
-    if (companyId) {
-      setDefaultPurchaseProductIdState(getDefaultPurchaseProductId(companyId))
-      fetchProducts()
-      fetchUnits()
-    }
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (!resolvedCompanyId) {
+        setErrorMessage('Failed to resolve active company. Please re-login.')
+        setLoading(false)
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      setDefaultPurchaseProductIdState(getDefaultPurchaseProductId(resolvedCompanyId))
+      stripCompanyParamsFromUrl()
+      await Promise.all([fetchProducts(resolvedCompanyId), fetchUnits(resolvedCompanyId)])
+    })()
   }, [])
 
-  const fetchUnits = async () => {
+  const fetchUnits = async (targetCompanyId = companyId) => {
+    if (!targetCompanyId) return
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/units?companyId=${companyId}`)
+      const response = await fetch(`/api/units?companyId=${encodeURIComponent(targetCompanyId)}`)
       if (response.ok) {
         const data = await response.json()
         setUnits(data)
+      } else {
+        setUnits([])
       }
     } catch (error) {
       console.error('Error fetching units:', error)
+      setUnits([])
     }
   }
 
-  const fetchProducts = async () => {
+  const fetchProducts = async (targetCompanyId = companyId) => {
+    if (!targetCompanyId) {
+      setLoading(false)
+      return
+    }
+
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/products?companyId=${companyId}`)
+      const response = await fetch(`/api/products?companyId=${encodeURIComponent(targetCompanyId)}`)
       if (response.ok) {
         const data = await response.json()
         const rows = Array.isArray(data) ? data : []
         setProducts(rows)
 
-        const rememberedDefault = getDefaultPurchaseProductId(companyId || '')
+        const rememberedDefault = getDefaultPurchaseProductId(targetCompanyId)
         if (!rememberedDefault) {
           setDefaultPurchaseProductIdState('')
         } else if (rows.some((product) => product.id === rememberedDefault)) {
           setDefaultPurchaseProductIdState(rememberedDefault)
         } else {
-          clearDefaultPurchaseProductId(companyId || '')
+          clearDefaultPurchaseProductId(targetCompanyId)
           setDefaultPurchaseProductIdState('')
         }
+      } else {
+        setProducts([])
       }
     } catch (error) {
       console.error('Error fetching products:', error)
+      setProducts([])
     } finally {
       setLoading(false)
     }
@@ -120,11 +133,12 @@ export default function ProductMasterPage() {
       alert('Product name and unit are required')
       return
     }
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
       const url = editingProduct 
         ? `/api/products?id=${editingProduct.id}&companyId=${companyId}`
         : `/api/products?companyId=${companyId}`
@@ -188,8 +202,10 @@ export default function ProductMasterPage() {
     if (!confirm('Are you sure you want to delete this product? This may affect existing transactions.')) return
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
+      if (!companyId) {
+        alert('Active company not found. Please re-login.')
+        return
+      }
       
       const response = await fetch(`/api/products?id=${id}&companyId=${companyId}`, {
         method: 'DELETE',
@@ -214,21 +230,21 @@ export default function ProductMasterPage() {
 
   const handleDeleteAll = async () => {
     if (!confirm('Delete all products for this company?')) return
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
     const response = await fetch(`/api/products?companyId=${companyId}&all=true`, { method: 'DELETE' })
-    const result = await response.json()
+    const result = await response.json().catch(() => ({}))
     alert(result.message || result.error || 'Operation completed')
     if (response.ok) {
-      clearDefaultPurchaseProductId(companyId || '')
+      clearDefaultPurchaseProductId(companyId)
       setDefaultPurchaseProductIdState('')
       fetchProducts()
     }
   }
 
   const handleSetDefaultPurchaseProduct = (productId: string) => {
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
     if (!companyId) return
 
     setDefaultPurchaseProductId(companyId, productId)
@@ -273,13 +289,15 @@ export default function ProductMasterPage() {
     )
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
-
   return (
     <DashboardLayout companyId={companyId}>
       <div className="p-6">
         <div className="max-w-6xl mx-auto">
+          {errorMessage && (
+            <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          )}
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-3">
               <Package className="h-8 w-8 text-blue-600" />

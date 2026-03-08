@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -10,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import DashboardLayout from '@/app/components/DashboardLayout'
 import { Plus, Edit, Trash2, Truck } from 'lucide-react'
+import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
 interface Transport {
   id: string
@@ -26,12 +26,12 @@ interface Transport {
 }
 
 export default function TransportMasterPage() {
-  const router = useRouter()
+  const [companyId, setCompanyId] = useState('')
   const [transports, setTransports] = useState<Transport[]>([])
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingTransport, setEditingTransport] = useState<Transport | null>(null)
-  const [searchParams, setSearchParams] = useState<URLSearchParams>()
 
   // Form state
   const [formData, setFormData] = useState({
@@ -44,25 +44,29 @@ export default function TransportMasterPage() {
     description: '',
     isActive: true
   })
-
-  const vehicleTypes = ['Truck', 'Mini Truck', 'Tempo', 'Auto', 'Bike', 'Van', 'Container']
-
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    setSearchParams(params)
-    const companyId = params.get('companyId')
-    
-    if (companyId) {
-      fetchTransports()
-    }
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (!resolvedCompanyId) {
+        setErrorMessage('Failed to resolve active company. Please re-login.')
+        setLoading(false)
+        return
+      }
+
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+      await fetchTransports(resolvedCompanyId)
+    })()
   }, [])
 
-  const fetchTransports = async () => {
+  const fetchTransports = async (targetCompanyId = companyId) => {
+    if (!targetCompanyId) {
+      setLoading(false)
+      return
+    }
+
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      const response = await fetch(`/api/transports?companyId=${companyId}`)
+      const response = await fetch(`/api/transports?companyId=${encodeURIComponent(targetCompanyId)}`)
       if (response.ok) {
         const data = await response.json()
         setTransports(
@@ -71,9 +75,12 @@ export default function TransportMasterPage() {
             isActive: item?.isActive ?? true
           }))
         )
+      } else {
+        setTransports([])
       }
     } catch (error) {
       console.error('Error fetching transports:', error)
+      setTransports([])
     } finally {
       setLoading(false)
     }
@@ -82,11 +89,8 @@ export default function TransportMasterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
-    
     if (!companyId) {
-      alert('Company ID is required. Please access this page through the proper company dashboard.')
+      alert('Active company not found. Please re-login.')
       return
     }
     
@@ -160,16 +164,12 @@ export default function TransportMasterPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this transport? This may affect existing transactions.')) return
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
 
     try {
-      const params = new URLSearchParams(window.location.search)
-      const companyId = params.get('companyId')
-      
-      if (!companyId) {
-        alert('Company ID is required. Please access this page through the proper company dashboard.')
-        return
-      }
-      
       const response = await fetch(`/api/transports?id=${id}&companyId=${companyId}`, {
         method: 'DELETE',
       })
@@ -189,10 +189,12 @@ export default function TransportMasterPage() {
 
   const handleDeleteAll = async () => {
     if (!confirm('Delete all transports for this company?')) return
-    const params = new URLSearchParams(window.location.search)
-    const companyId = params.get('companyId')
+    if (!companyId) {
+      alert('Active company not found. Please re-login.')
+      return
+    }
     const response = await fetch(`/api/transports?companyId=${companyId}&all=true`, { method: 'DELETE' })
-    const result = await response.json()
+    const result = await response.json().catch(() => ({}))
     alert(result.message || result.error || 'Operation completed')
     if (response.ok) fetchTransports()
   }
@@ -234,13 +236,15 @@ export default function TransportMasterPage() {
     )
   }
 
-  const urlParams = new URLSearchParams(window.location.search)
-  const companyId = urlParams.get('companyId') || ''
-
   return (
     <DashboardLayout companyId={companyId}>
       <div className="p-6">
         <div className="max-w-6xl mx-auto">
+          {errorMessage && (
+            <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          )}
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-3">
               <Truck className="h-8 w-8 text-yellow-600" />

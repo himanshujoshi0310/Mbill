@@ -32,6 +32,21 @@ const writeSchema = z.object({
   status: z.string().optional().nullable()
 }).strict()
 
+function deriveStatus(paid: number, total: number): 'unpaid' | 'partial' | 'paid' {
+  if (total <= 0) return 'unpaid'
+  if (paid <= 0) return 'unpaid'
+  if (paid >= total) return 'paid'
+  return 'partial'
+}
+
+function normalizeStatus(statusValue: unknown, paid: number, total: number): 'unpaid' | 'partial' | 'paid' {
+  const raw = typeof statusValue === 'string' ? statusValue.trim().toLowerCase() : ''
+  if (raw === 'paid') return 'paid'
+  if (raw === 'partial' || raw === 'partially_paid' || raw === 'partially-paid') return 'partial'
+  if (raw === 'unpaid') return 'unpaid'
+  return deriveStatus(paid, total)
+}
+
 export async function POST(request: NextRequest) {
   try {
     const parsed = await parseJsonWithSchema(request, writeSchema)
@@ -64,6 +79,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Paid amount cannot exceed gross amount' }, { status: 400 })
     }
     const balanceAmount = parseNonNegativeNumber(body.balance) ?? Math.max(0, grossAmount - paidAmount)
+    const normalizedStatus = normalizeStatus(body.status ?? body.paymentStatus, paidAmount, grossAmount)
 
     const cookieStore = await cookies()
     const userId = cookieStore.get('userId')?.value || 'test-user'
@@ -113,7 +129,7 @@ export async function POST(request: NextRequest) {
         totalAmount: grossAmount,
         paidAmount,
         balanceAmount,
-        status: body.paymentStatus || 'unpaid',
+        status: normalizedStatus,
         createdBy: userId,
       },
     })
@@ -266,6 +282,7 @@ export async function PUT(request: NextRequest) {
       parseNonNegativeNumber(body.balanceAmount) ??
       parseNonNegativeNumber(body.balance) ??
       Math.max(0, grossAmount - paidAmount)
+    const normalizedStatus = normalizeStatus(body.status ?? body.paymentStatus, paidAmount, grossAmount)
 
     let supplier = await prisma.supplier.findFirst({
       where: {
@@ -313,7 +330,7 @@ export async function PUT(request: NextRequest) {
         totalAmount: grossAmount,
         paidAmount,
         balanceAmount,
-        status: body.status || (balanceAmount === 0 ? 'paid' : balanceAmount === grossAmount ? 'unpaid' : 'partial'),
+        status: normalizedStatus,
       },
     })
 

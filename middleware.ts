@@ -31,6 +31,16 @@ type RateLimitEntry = {
 }
 
 const rateLimitStore = new Map<string, RateLimitEntry>()
+const businessAppRoutePrefixes = [
+  '/main',
+  '/master',
+  '/purchase',
+  '/sales',
+  '/stock',
+  '/payment',
+  '/reports',
+  '/company'
+]
 
 function consumeRateLimit(key: string, max: number, windowMs: number): { allowed: boolean; retryAfter?: number } {
   const now = Date.now()
@@ -96,6 +106,10 @@ function isLockBypassApiRoute(pathname: string): boolean {
   }
 
   return lockBypassApiPatterns.some((pattern) => pattern.test(pathname))
+}
+
+function isBusinessAppRoute(pathname: string): boolean {
+  return businessAppRoutePrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
 }
 
 async function ensureCompanyScope(
@@ -352,6 +366,60 @@ export async function middleware(request: NextRequest) {
         headers: requestHeaders
       }
     })
+  }
+
+  if (!isApiRoute && isBusinessAppRoute(pathname)) {
+    const token = request.cookies.get('auth-token')?.value
+    if (!token) {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
+
+    const payload = verifyToken(token)
+    if (!payload) {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        userId: payload.userId,
+        traderId: payload.traderId,
+        deletedAt: null
+      },
+      select: {
+        role: true,
+        locked: true,
+        deletedAt: true,
+        trader: {
+          select: {
+            locked: true,
+            deletedAt: true
+          }
+        },
+        company: {
+          select: {
+            locked: true,
+            deletedAt: true
+          }
+        }
+      }
+    })
+
+    if (
+      !user ||
+      user.locked ||
+      user.deletedAt ||
+      user.trader?.locked ||
+      user.trader?.deletedAt ||
+      user.company?.locked ||
+      user.company?.deletedAt
+    ) {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
+
+    const role = normalizeAppRole(user.role || payload.role)
+    if (role === 'super_admin') {
+      return NextResponse.redirect(new URL('/super-admin/crud', request.url))
+    }
   }
 
   if (!isApiRoute && pathname.startsWith('/super-admin') && pathname !== '/super-admin/login') {

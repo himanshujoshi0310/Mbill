@@ -26,6 +26,9 @@ Core app is running with major bug-fix and stability passes completed.
 - Better form validation messages and safe numeric parsing
 - Improved API response handling for failed/non-JSON responses
 - Cleaner data load fallbacks for empty lists and partial records
+- Purchase bill snapshot storage for reliable future print output
+- Save Purchase Bill + Save & Print flow (formatted bill print route)
+- Standardized purchase status values: `unpaid`, `partial`, `paid`
 
 ## Bulk Data Support (Large Scale)
 
@@ -94,7 +97,33 @@ GET /api/products?companyId=<COMPANY_ID>&page=1&pageSize=50&search=soy&withMeta=
 - TypeScript
 - Tailwind + Shadcn UI
 - Prisma ORM
-- SQLite (dev) / PostgreSQL (recommended for production)
+- SQLite (dev) / PostgreSQL (recommended for production, shared multi-device)
+
+## Multi-Device Permanent Data (Important)
+
+If you run this app separately on different laptops with local SQLite, each device has its own DB file, so data will not match.
+
+To make users/traders/companies/passwords permanent and shared across all devices:
+
+1. Deploy one central app server (VPS/Render/Railway/Vercel + Node runtime).
+2. Use one shared PostgreSQL database (Neon/Supabase/RDS/Railway).
+3. Point all devices to the same hosted app URL.
+
+### Required Production Env
+
+```env
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/DB?sslmode=require"
+JWT_SECRET="long-random-32+"
+REFRESH_SECRET="long-random-32+"
+ALLOWED_ORIGINS="https://your-app-domain.com"
+NEXT_PUBLIC_LIVE_SYNC_MS="20000"
+```
+
+### Development Env (current local)
+
+```env
+DATABASE_URL="file:./dev.db"
+```
 
 ## Local Setup
 
@@ -108,6 +137,31 @@ npm run dev
 App URLs:
 
 - `http://localhost:3000` (or next available port)
+
+## Production Setup (Shared Web App)
+
+```bash
+# 1) install
+npm install
+
+# 2) generate prisma client
+npm run prisma:generate:postgres
+
+# 3) apply schema to production database
+npm run prisma:dbpush:postgres
+
+# 4) build and run
+npm run build
+npm run start
+```
+
+Then open the same deployed URL from all devices. Super Admin changes will persist in the shared DB.
+
+## Real-Time Sync Behavior
+
+- Sidebar privileges auto-refresh (default every 20s)
+- Top user/company context auto-refresh (default every 20s)
+- Configure refresh interval with `NEXT_PUBLIC_LIVE_SYNC_MS`
 
 ## Developer Commands
 
@@ -123,6 +177,10 @@ npx prisma generate
 
 # Sync schema to DB (dev)
 npx prisma db push
+
+# PostgreSQL (shared web app) commands
+npm run prisma:generate:postgres
+npm run prisma:dbpush:postgres
 ```
 
 ## Troubleshooting

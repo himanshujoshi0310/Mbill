@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const { name, address, phone } = validation.data!
+    const { name, address, phone, mandiAccountNumber } = validation.data!
 
     const targetTraderId = normalizeId((validation.data as { traderId?: unknown }).traderId)
 
@@ -196,7 +196,8 @@ export async function POST(request: NextRequest) {
         traderId: targetTraderId,
         name,
         address,
-        phone
+        phone,
+        mandiAccountNumber: typeof mandiAccountNumber === 'string' ? mandiAccountNumber.trim() || null : null
       }
     })
 
@@ -241,7 +242,7 @@ export async function PUT(request: NextRequest) {
       )
     }
 
-    const { name, address, phone } = validation.data!
+    const { name, address, phone, mandiAccountNumber } = validation.data!
     const id = normalizeId(new URL(request.url).searchParams.get('id'))
 
     if (!id) {
@@ -261,7 +262,10 @@ export async function PUT(request: NextRequest) {
       data: {
         name,
         address,
-        phone
+        phone,
+        ...(typeof mandiAccountNumber === 'string'
+          ? { mandiAccountNumber: mandiAccountNumber.trim() || null }
+          : {})
       }
     })
 

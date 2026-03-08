@@ -16,15 +16,28 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
   const [currentUser, setCurrentUser] = useState<string | null>(null)
   const [resolvedCompanyId, setResolvedCompanyId] = useState(companyId)
   const [currentCompanyName, setCurrentCompanyName] = useState<string | null>(null)
+  const liveSyncMs = Number(process.env.NEXT_PUBLIC_LIVE_SYNC_MS || 20000)
   const router = useRouter()
 
   useEffect(() => {
     // Check authentication status via API call
+    let cancelled = false
+    let timerId: ReturnType<typeof setInterval> | null = null
+
     const checkAuth = async () => {
       try {
-        const response = await fetch('/api/auth/me')
+        const response = await fetch('/api/auth/me', { cache: 'no-store' })
+        if (cancelled) return
         if (response.ok) {
           const data = await response.json()
+          if (cancelled) return
+          const normalizedRole = String(data?.user?.role || data?.role || '')
+            .toLowerCase()
+            .replace(/\s+/g, '_')
+          if (normalizedRole === 'super_admin' && window.location.pathname.startsWith('/main')) {
+            router.replace('/super-admin/crud')
+            return
+          }
           setCurrentUser(data?.user?.userId || data?.userId || null)
         } else {
           if (response.status === 401) {
@@ -32,15 +45,25 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
           }
         }
       } catch (error) {
+        if (cancelled || isAbortError(error)) return
         void error
       }
     }
     
-    checkAuth()
-  }, [router])
+    void checkAuth()
+    timerId = setInterval(() => {
+      void checkAuth()
+    }, liveSyncMs)
+
+    return () => {
+      cancelled = true
+      if (timerId) clearInterval(timerId)
+    }
+  }, [router, liveSyncMs])
 
   useEffect(() => {
     let cancelled = false
+    let timerId: ReturnType<typeof setInterval> | null = null
     const loadCompanyContext = async () => {
       if (cancelled) return
 
@@ -70,7 +93,7 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
       }
 
       try {
-        const response = await fetch('/api/companies')
+        const response = await fetch('/api/companies', { cache: 'no-store' })
         if (cancelled) return
         if (!response.ok) {
           setResolvedCompanyId(targetCompanyId)
@@ -95,10 +118,15 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
     }
 
     void loadCompanyContext()
+    timerId = setInterval(() => {
+      void loadCompanyContext()
+    }, liveSyncMs)
+
     return () => {
       cancelled = true
+      if (timerId) clearInterval(timerId)
     }
-  }, [companyId])
+  }, [companyId, liveSyncMs])
 
   const toggleSidebar = () => {
     setIsSidebarCollapsed(!isSidebarCollapsed)

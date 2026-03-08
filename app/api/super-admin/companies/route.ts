@@ -10,6 +10,7 @@ const companyPayloadSchema = z
     traderId: z.string().trim().min(1).optional().nullable(),
     address: z.string().trim().max(400).optional().nullable(),
     phone: z.string().optional().nullable(),
+    mandiAccountNumber: z.string().trim().max(120).optional().nullable(),
     locked: z.boolean().optional()
   })
   .strict()
@@ -31,6 +32,7 @@ function normalizeCompanyPayload(payload: z.infer<typeof companyPayloadSchema>) 
     traderId: normalizeTraderId(payload.traderId),
     address: normalizeOptionalString(payload.address),
     phone: normalizedPhone,
+    mandiAccountNumber: normalizeOptionalString(payload.mandiAccountNumber),
     locked: payload.locked ?? false
   }
 }
@@ -55,6 +57,7 @@ export async function GET(request: NextRequest) {
         traderId: true,
         address: true,
         phone: true,
+        mandiAccountNumber: true,
         locked: true,
         deletedAt: true,
         createdAt: true,
@@ -87,6 +90,7 @@ export async function GET(request: NextRequest) {
       traderId: company.traderId,
       address: company.address,
       phone: company.phone,
+      mandiAccountNumber: company.mandiAccountNumber,
       locked: company.locked,
       deletedAt: company.deletedAt,
       createdAt: company.createdAt,
@@ -104,7 +108,8 @@ export async function GET(request: NextRequest) {
     }))
 
     return NextResponse.json(response)
-  } catch {
+  } catch (error) {
+    console.error('super-admin companies GET failed:', error)
     return NextResponse.json({ error: 'Failed to fetch companies' }, { status: 500 })
   }
 }
@@ -168,6 +173,7 @@ export async function POST(request: NextRequest) {
         traderId: normalized.traderId,
         address: normalized.address,
         phone: normalized.phone,
+        mandiAccountNumber: normalized.mandiAccountNumber,
         locked: normalized.locked
       },
       include: {
@@ -211,7 +217,8 @@ export async function POST(request: NextRequest) {
       },
       { status: 201 }
     )
-  } catch {
+  } catch (error) {
+    console.error('super-admin companies POST failed:', error)
     return NextResponse.json({ error: 'Failed to create company' }, { status: 500 })
   }
 }

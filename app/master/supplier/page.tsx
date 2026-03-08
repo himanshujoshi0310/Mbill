@@ -28,6 +28,8 @@ export default function SupplierMasterPage() {
   const [companyId, setCompanyId] = useState('')
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [loading, setLoading] = useState(true)
+  const [canReadSupplier, setCanReadSupplier] = useState(false)
+  const [canWriteSupplier, setCanWriteSupplier] = useState(false)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
@@ -49,9 +51,42 @@ export default function SupplierMasterPage() {
       }
       setCompanyId(resolvedCompanyId)
       stripCompanyParamsFromUrl()
+      const permission = await fetchSupplierPermissions(resolvedCompanyId)
+      if (!permission.canRead) {
+        setLoading(false)
+        setSuppliers([])
+        setMessage({ type: 'error', text: 'No access to supplier master for this user.' })
+        return
+      }
       await fetchSuppliers(resolvedCompanyId)
     })()
   }, [])
+
+  const fetchSupplierPermissions = async (id: string) => {
+    const denied = { canRead: false, canWrite: false }
+    try {
+      const response = await fetch(`/api/auth/permissions?companyId=${encodeURIComponent(id)}&includeMeta=true`, {
+        cache: 'no-store'
+      })
+      if (!response.ok) {
+        setCanReadSupplier(false)
+        setCanWriteSupplier(false)
+        return denied
+      }
+      const payload = await response.json().catch(() => ({}))
+      const permissions = Array.isArray(payload?.permissions) ? payload.permissions : []
+      const supplierPermission = permissions.find((row: { module?: string }) => row.module === 'MASTER_PARTIES')
+      const canRead = Boolean(supplierPermission?.canRead || supplierPermission?.canWrite)
+      const canWrite = Boolean(supplierPermission?.canWrite)
+      setCanReadSupplier(canRead)
+      setCanWriteSupplier(canWrite)
+      return { canRead, canWrite }
+    } catch {
+      setCanReadSupplier(false)
+      setCanWriteSupplier(false)
+      return denied
+    }
+  }
 
   const fetchSuppliers = async (id = companyId) => {
     if (!id) return
@@ -115,6 +150,10 @@ export default function SupplierMasterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!companyId) return
+    if (!canWriteSupplier) {
+      setMessage({ type: 'error', text: 'You do not have write access for supplier master' })
+      return
+    }
     if (!formData.name.trim()) {
       setMessage({ type: 'error', text: 'Supplier name is required' })
       return
@@ -156,6 +195,10 @@ export default function SupplierMasterPage() {
   }
 
   const handleEdit = (supplier: Supplier) => {
+    if (!canWriteSupplier) {
+      setMessage({ type: 'error', text: 'You do not have write access for supplier master' })
+      return
+    }
     setEditingSupplier(supplier)
     setFormData({
       name: supplier.name || '',
@@ -167,6 +210,10 @@ export default function SupplierMasterPage() {
 
   const handleDelete = async (id: string) => {
     if (!companyId) return
+    if (!canWriteSupplier) {
+      setMessage({ type: 'error', text: 'You do not have write access for supplier master' })
+      return
+    }
     if (!confirm('Are you sure you want to delete this supplier?')) return
 
     try {
@@ -187,6 +234,10 @@ export default function SupplierMasterPage() {
 
   const handleDeleteAll = async () => {
     if (!companyId) return
+    if (!canWriteSupplier) {
+      setMessage({ type: 'error', text: 'You do not have write access for supplier master' })
+      return
+    }
     if (!confirm('Delete all suppliers for this company?')) return
 
     try {
@@ -255,11 +306,15 @@ export default function SupplierMasterPage() {
             </div>
             <div className="flex gap-2">
               <Button onClick={handleExportCsv} variant="outline">Export CSV</Button>
-              <Button onClick={handleDeleteAll} variant="destructive">Delete All</Button>
-              <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
+              {canWriteSupplier ? (
+                <Button onClick={handleDeleteAll} variant="destructive">Delete All</Button>
+              ) : null}
+              {canWriteSupplier ? (
+                <Button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2">
                 <Plus className="h-4 w-4" />
                 Add Supplier
-              </Button>
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -289,6 +344,12 @@ export default function SupplierMasterPage() {
               {message.text}
             </div>
           )}
+
+          {canReadSupplier && !canWriteSupplier ? (
+            <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Read-only access: you can view suppliers but cannot add, edit, or delete.
+            </div>
+          ) : null}
 
           {isFormOpen && (
             <Card className="mb-6">
@@ -343,7 +404,9 @@ export default function SupplierMasterPage() {
               <CardTitle>Supplier List</CardTitle>
             </CardHeader>
             <CardContent>
-              {filteredSuppliers.length === 0 ? (
+              {!canReadSupplier ? (
+                <div className="py-8 text-center text-gray-500">No access to view supplier data.</div>
+              ) : filteredSuppliers.length === 0 ? (
                 <div className="py-8 text-center text-gray-500">No suppliers found. Add your first supplier to get started.</div>
               ) : (
                 <Table>
@@ -364,14 +427,18 @@ export default function SupplierMasterPage() {
                         <TableCell>{supplier.address || '-'}</TableCell>
                         <TableCell>{formatDate(supplier.createdAt, supplier.updatedAt)}</TableCell>
                         <TableCell>
-                          <div className="flex space-x-2">
-                            <Button size="sm" variant="outline" onClick={() => handleEdit(supplier)}>
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button size="sm" variant="outline" onClick={() => handleDelete(supplier.id)}>
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                          {canWriteSupplier ? (
+                            <div className="flex space-x-2">
+                              <Button size="sm" variant="outline" onClick={() => handleEdit(supplier)}>
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => handleDelete(supplier.id)}>
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-500">Read only</span>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}

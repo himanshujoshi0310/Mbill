@@ -302,7 +302,7 @@ export default function SpecialPurchaseEntryPage() {
       if (paid === gross) {
         paymentStatus = 'paid'
       } else {
-        paymentStatus = 'partially_paid'
+        paymentStatus = 'partial'
       }
     }
 

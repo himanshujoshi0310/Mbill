@@ -32,6 +32,7 @@ type CompanyRow = {
   locked: boolean
   phone?: string | null
   address?: string | null
+  mandiAccountNumber?: string | null
   trader?: { id: string; name: string } | null
   _count?: {
     users?: number
@@ -63,6 +64,7 @@ type ModalState = {
     password?: string
     address?: string
     phone?: string
+    mandiAccountNumber?: string
     locked?: boolean
     privilegePreset?: 'keep' | 'none' | 'read' | 'all'
   }
@@ -199,6 +201,7 @@ export default function SuperAdminCrudPage() {
           traderId: '',
           address: '',
           phone: '',
+          mandiAccountNumber: '',
           locked: false
         }
       })
@@ -246,6 +249,7 @@ export default function SuperAdminCrudPage() {
           traderId: row.traderId || '',
           address: row.address || '',
           phone: row.phone || '',
+          mandiAccountNumber: row.mandiAccountNumber || '',
           locked: row.locked
         }
       })
@@ -340,6 +344,7 @@ export default function SuperAdminCrudPage() {
           traderId: form.traderId?.trim() || null,
           address: form.address?.trim() || null,
           phone: form.phone?.trim() || null,
+          mandiAccountNumber: form.mandiAccountNumber?.trim() || null,
           locked: form.locked === true
         }
       } else {
@@ -396,7 +401,8 @@ export default function SuperAdminCrudPage() {
   }
 
   const quickApplyPrivileges = async (row: UserRow, preset: 'none' | 'read' | 'all') => {
-    if (!row.companyId) {
+    const targetCompanyId = (row.companyId || row.company?.id || '').trim()
+    if (!targetCompanyId) {
       setError('User has no company assigned. Cannot set privileges.')
       return
     }
@@ -407,7 +413,7 @@ export default function SuperAdminCrudPage() {
     try {
       setError(null)
       setPrivilegeSavingKey(key)
-      await applyUserPrivileges(row.id, row.companyId, preset)
+      await applyUserPrivileges(row.id, targetCompanyId, preset)
       await fetchData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update privileges')
@@ -616,6 +622,7 @@ export default function SuperAdminCrudPage() {
                   <TableRow>
                     <TableHead>Company</TableHead>
                     <TableHead>Trader</TableHead>
+                    <TableHead>Mandi Account No.</TableHead>
                     <TableHead>Users</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Actions</TableHead>
@@ -626,6 +633,7 @@ export default function SuperAdminCrudPage() {
                     <TableRow key={row.id}>
                       <TableCell className="font-medium">{row.name}</TableCell>
                       <TableCell>{row.trader?.name || row.traderId || '-'}</TableCell>
+                      <TableCell>{row.mandiAccountNumber || '-'}</TableCell>
                       <TableCell>{row._count?.users || 0}</TableCell>
                       <TableCell>
                         <Badge variant={row.locked ? 'destructive' : 'default'}>
@@ -706,7 +714,7 @@ export default function SuperAdminCrudPage() {
                               size="sm"
                               variant="outline"
                               className="h-7 px-2 text-xs"
-                              disabled={!row.companyId || privilegeSavingKey === `${row.id}:all`}
+                              disabled={!(row.companyId || row.company?.id) || privilegeSavingKey === `${row.id}:all`}
                               onClick={() => quickApplyPrivileges(row, 'all')}
                             >
                               Full
@@ -716,7 +724,7 @@ export default function SuperAdminCrudPage() {
                               size="sm"
                               variant="outline"
                               className="h-7 px-2 text-xs"
-                              disabled={!row.companyId || privilegeSavingKey === `${row.id}:read`}
+                              disabled={!(row.companyId || row.company?.id) || privilegeSavingKey === `${row.id}:read`}
                               onClick={() => quickApplyPrivileges(row, 'read')}
                             >
                               Read
@@ -726,7 +734,7 @@ export default function SuperAdminCrudPage() {
                               size="sm"
                               variant="outline"
                               className="h-7 px-2 text-xs"
-                              disabled={!row.companyId || privilegeSavingKey === `${row.id}:none`}
+                              disabled={!(row.companyId || row.company?.id) || privilegeSavingKey === `${row.id}:none`}
                               onClick={() => quickApplyPrivileges(row, 'none')}
                             >
                               None
@@ -826,6 +834,14 @@ export default function SuperAdminCrudPage() {
                   <div>
                     <Label>Address</Label>
                     <Input value={modal.form.address || ''} onChange={(e) => setModalField('address', e.target.value)} />
+                  </div>
+                  <div>
+                    <Label>Mandi Account Number</Label>
+                    <Input
+                      value={modal.form.mandiAccountNumber || ''}
+                      onChange={(e) => setModalField('mandiAccountNumber', e.target.value)}
+                      placeholder="Enter mandi account number"
+                    />
                   </div>
                   <div className="flex items-center gap-2 pt-6">
                     <input

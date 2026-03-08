@@ -149,7 +149,13 @@ function PurchaseEditPageContent() {
 
       // Populate form with existing data
       setBillNumber(billData.billNo)
-      setBillDate(new Date(billData.billDate).toISOString().split('T')[0])
+      {
+        const parsedBillDate = new Date(billData.billDate)
+        const safeBillDate = Number.isFinite(parsedBillDate.getTime())
+          ? parsedBillDate.toISOString().split('T')[0]
+          : new Date().toISOString().split('T')[0]
+        setBillDate(safeBillDate)
+      }
       setFarmerName(billData.farmer?.name || '')
       setFarmerAddress(billData.farmer?.address || '')
       setFarmerContact(billData.farmer?.phone1 || '')
@@ -250,7 +256,7 @@ function PurchaseEditPageContent() {
       if (paid === payable) {
         paymentStatus = 'paid'
       } else {
-        paymentStatus = 'partially_paid'
+        paymentStatus = 'partial'
       }
     }
 
@@ -258,8 +264,8 @@ function PurchaseEditPageContent() {
       const requestData = {
         id: billId,
         companyId,
-        billNo: billNumber,
-        billDate: new Date(billDate),
+        billNumber,
+        billDate,
         farmerId: purchaseBill?.farmer?.id || '',
         farmerName,
         farmerAddress,

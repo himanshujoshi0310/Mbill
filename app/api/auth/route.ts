@@ -230,6 +230,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const normalizedRole = String(authResult.user?.role || '')
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+    if (normalizedRole === 'super_admin') {
+      return NextResponse.json(
+        { error: 'Use Super Admin login page' },
+        { status: 403, headers }
+      )
+    }
+
     // Record successful attempt (resets brute force counter)
     recordSuccessfulAttempt(request)
 

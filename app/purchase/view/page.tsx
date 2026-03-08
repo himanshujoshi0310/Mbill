@@ -14,7 +14,18 @@ interface PurchaseBill {
   id: string
   billNo: string
   billDate: string
-  supplier: {
+  farmerNameSnapshot?: string | null
+  farmerAddressSnapshot?: string | null
+  farmerContactSnapshot?: string | null
+  krashakAnubandhSnapshot?: string | null
+  companyNameSnapshot?: string | null
+  mandiAccountNumberSnapshot?: string | null
+  company?: {
+    id: string
+    name: string
+    mandiAccountNumber?: string | null
+  }
+  farmer: {
     id: string
     name: string
     address: string
@@ -141,7 +152,10 @@ function PurchaseViewPageContent() {
   }
 
   const handlePrint = () => {
-    window.print()
+    const printPath = companyId
+      ? `/purchase/${billId}/print?companyId=${encodeURIComponent(companyId)}`
+      : `/purchase/${billId}/print`
+    router.push(printPath)
   }
 
   const handleExportPDF = () => {
@@ -215,6 +229,10 @@ function PurchaseViewPageContent() {
                   <p className="font-semibold">{purchaseBill.billNo}</p>
                 </div>
                 <div>
+                  <p className="text-sm text-gray-600">Mandi Account Number</p>
+                  <p className="font-semibold">{purchaseBill.company?.mandiAccountNumber || '-'}</p>
+                </div>
+                <div>
                   <p className="text-sm text-gray-600">Bill Date</p>
                   <p className="font-semibold">{new Date(purchaseBill.billDate).toLocaleDateString()}</p>
                 </div>
@@ -235,28 +253,28 @@ function PurchaseViewPageContent() {
             </CardContent>
           </Card>
 
-          {/* Supplier Information */}
+          {/* Farmer Information */}
           <Card className="mb-6">
             <CardHeader>
-              <CardTitle>Supplier Information</CardTitle>
+              <CardTitle>Farmer Information</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div>
-                  <p className="text-sm text-gray-600">Supplier Name</p>
-                  <p className="font-semibold">{purchaseBill.supplier?.name || 'N/A'}</p>
+                  <p className="text-sm text-gray-600">Farmer Name</p>
+                  <p className="font-semibold">{purchaseBill.farmerNameSnapshot || purchaseBill.farmer?.name || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Address</p>
-                  <p className="font-semibold">{purchaseBill.supplier?.address || 'N/A'}</p>
+                  <p className="font-semibold">{purchaseBill.farmerAddressSnapshot || purchaseBill.farmer?.address || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Contact</p>
-                  <p className="font-semibold">{purchaseBill.supplier?.phone1 || 'N/A'}</p>
+                  <p className="font-semibold">{purchaseBill.farmerContactSnapshot || purchaseBill.farmer?.phone1 || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Krashak Anubandh Number</p>
-                  <p className="font-semibold">{purchaseBill.supplier?.krashakAnubandhNumber || 'N/A'}</p>
+                  <p className="font-semibold">{purchaseBill.krashakAnubandhSnapshot || purchaseBill.farmer?.krashakAnubandhNumber || 'N/A'}</p>
                 </div>
               </div>
             </CardContent>

@@ -12,6 +12,7 @@ const updateCompanySchema = z
     traderId: z.string().trim().min(1).optional().nullable(),
     address: z.string().trim().max(400).optional().nullable(),
     phone: z.string().optional().nullable(),
+    mandiAccountNumber: z.string().trim().max(120).optional().nullable(),
     locked: z.boolean().optional()
   })
   .strict()
@@ -21,6 +22,7 @@ const updateCompanySchema = z
       value.traderId !== undefined ||
       value.address !== undefined ||
       value.phone !== undefined ||
+      value.mandiAccountNumber !== undefined ||
       value.locked !== undefined,
     {
       message: 'At least one field is required'
@@ -57,6 +59,12 @@ function normalizeUpdatePayload(payload: z.infer<typeof updateCompanySchema>) {
         : payload.phone === null
           ? null
           : normalizePhone(payload.phone),
+    mandiAccountNumber:
+      payload.mandiAccountNumber === undefined
+        ? undefined
+        : payload.mandiAccountNumber === null
+          ? null
+          : normalizeOptionalString(payload.mandiAccountNumber),
     locked: payload.locked
   }
 }
@@ -73,6 +81,7 @@ async function getCompanyById(id: string, includeDeleted: boolean) {
       traderId: true,
       address: true,
       phone: true,
+      mandiAccountNumber: true,
       locked: true,
       deletedAt: true,
       createdAt: true,
@@ -104,6 +113,7 @@ async function getCompanyById(id: string, includeDeleted: boolean) {
     traderId: company.traderId,
     address: company.address,
     phone: company.phone,
+    mandiAccountNumber: company.mandiAccountNumber,
     locked: company.locked,
     deletedAt: company.deletedAt,
     createdAt: company.createdAt,
@@ -234,6 +244,7 @@ export async function PUT(
           ...(normalized.traderId !== undefined ? { traderId: normalized.traderId } : {}),
           ...(normalized.address !== undefined ? { address: normalized.address } : {}),
           ...(normalized.phone !== undefined ? { phone: normalized.phone } : {}),
+          ...(normalized.mandiAccountNumber !== undefined ? { mandiAccountNumber: normalized.mandiAccountNumber } : {}),
           ...(normalized.locked !== undefined ? { locked: normalized.locked } : {})
         }
       })

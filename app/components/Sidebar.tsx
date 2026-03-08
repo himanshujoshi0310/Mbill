@@ -51,7 +51,7 @@ const menuItems: MenuItem[] = [
     icon: Settings,
     children: [
       { title: 'Product', href: '/master/product', permissionModule: 'MASTER_PRODUCTS' },
-      { title: 'Supplier', href: '/master/supplier' },
+      { title: 'Supplier', href: '/master/supplier', permissionModule: 'MASTER_PARTIES' },
       { title: 'Sales Item', href: '/master/sales-item', permissionModule: 'MASTER_SALES_ITEM' },
       { title: 'Marka', href: '/master/marka', permissionModule: 'MASTER_MARKA' },
       { title: 'Party', href: '/master/party', permissionModule: 'MASTER_PARTIES' },
@@ -117,6 +117,7 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
   const pathname = usePathname()
   const [openItems, setOpenItems] = useState<string[]>([])
   const [allowedModules, setAllowedModules] = useState<Set<MenuPermissionModule> | null>(null)
+  const permissionsRefreshMs = Number(process.env.NEXT_PUBLIC_LIVE_SYNC_MS || 20000)
 
   const withCompany = (href?: string) => href || '/main/dashboard'
 
@@ -132,6 +133,7 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
 
   useEffect(() => {
     let cancelled = false
+    let timerId: ReturnType<typeof setInterval> | null = null
 
     const fetchPermissions = async () => {
       try {
@@ -158,10 +160,15 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
     }
 
     void fetchPermissions()
+    timerId = setInterval(() => {
+      void fetchPermissions()
+    }, permissionsRefreshMs)
+
     return () => {
       cancelled = true
+      if (timerId) clearInterval(timerId)
     }
-  }, [companyId])
+  }, [companyId, permissionsRefreshMs])
 
   const hasChildAccess = (child: MenuChild) => {
     if (!child.permissionModule) return true

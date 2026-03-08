@@ -15,6 +15,7 @@ type CompanyDetail = {
   traderId: string | null
   address?: string | null
   phone?: string | null
+  mandiAccountNumber?: string | null
   locked: boolean
   trader?: { id: string; name: string } | null
   users: { id: string; userId: string; role?: string | null; locked: boolean }[]
@@ -106,6 +107,7 @@ export default function SuperAdminCompanyDetailPage() {
                   <p>Trader: {company.trader?.name || company.traderId || '-'}</p>
                   <p>Phone: {company.phone || '-'}</p>
                   <p>Address: {company.address || '-'}</p>
+                  <p>Mandi Account Number: {company.mandiAccountNumber || '-'}</p>
                 </div>
                 <div className="grid gap-2 text-sm md:grid-cols-3">
                   <p>Users: {company._count.users}</p>

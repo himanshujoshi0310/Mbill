@@ -75,7 +75,9 @@ function SalesPaymentEntryPageContent() {
   const [selectedBill, setSelectedBill] = useState('')
   const [selectedPartyName, setSelectedPartyName] = useState('')
   const [partySearch, setPartySearch] = useState('')
-  const [mergeSamePartyBills, setMergeSamePartyBills] = useState(false)
+  const [paymentFlow, setPaymentFlow] = useState<'single' | 'multi'>('single')
+  const [multiBillSelection, setMultiBillSelection] = useState<string[]>([])
+  const [multiBillFilter, setMultiBillFilter] = useState('')
 
   // Receipt form state
   const [receiptDate, setReceiptDate] = useState(new Date().toISOString().split('T')[0])
@@ -143,6 +145,21 @@ function SalesPaymentEntryPageContent() {
     () => selectedPartyBills.reduce((sum, bill) => sum + Number(bill.balanceAmount || 0), 0),
     [selectedPartyBills]
   )
+
+  const selectedMultiBills = useMemo(
+    () => selectedPartyBills.filter((bill) => multiBillSelection.includes(bill.id)),
+    [multiBillSelection, selectedPartyBills]
+  )
+
+  const selectedMultiPendingTotal = useMemo(
+    () => selectedMultiBills.reduce((sum, bill) => sum + Number(bill.balanceAmount || 0), 0),
+    [selectedMultiBills]
+  )
+
+  useEffect(() => {
+    // Keep multi-selection clean when bills refresh
+    setMultiBillSelection((prev) => prev.filter((id) => pendingBills.some((bill) => bill.id === id)))
+  }, [pendingBills])
 
   useEffect(() => {
     ;(async () => {
@@ -250,6 +267,12 @@ function SalesPaymentEntryPageContent() {
     }
   }
 
+  const toggleMultiBill = (billId: string) => {
+    setMultiBillSelection((prev) =>
+      prev.includes(billId) ? prev.filter((id) => id !== billId) : [...prev, billId]
+    )
+  }
+
   const submitReceipt = async (targetBillId: string, targetAmount: number) => {
     const receiptData = {
       companyId,
@@ -307,21 +330,21 @@ function SalesPaymentEntryPageContent() {
     setSubmitting(true)
 
     try {
-      if (mergeSamePartyBills) {
+      if (paymentFlow === 'multi') {
         if (!selectedPartyName) {
           alert('Please select a party')
           return
         }
-        if (selectedPartyBills.length === 0) {
-          alert('No unpaid bills found for selected party')
+        if (selectedPartyBills.length === 0 || multiBillSelection.length === 0) {
+          alert('Select at least one unpaid bill for the selected party')
           return
         }
-        if (receiptAmount > selectedPartyPendingTotal) {
-          alert(`Amount cannot exceed selected party pending total: ₹${selectedPartyPendingTotal.toFixed(2)}`)
+        if (receiptAmount > selectedMultiPendingTotal) {
+          alert(`Amount cannot exceed selected bills total: ₹${selectedMultiPendingTotal.toFixed(2)}`)
           return
         }
 
-        const sortedBills = selectedPartyBills
+        const sortedBills = selectedMultiBills
           .slice()
           .sort((a, b) => new Date(a.billDate).getTime() - new Date(b.billDate).getTime())
 
@@ -344,7 +367,7 @@ function SalesPaymentEntryPageContent() {
           remaining -= allocation
         }
 
-        alert(`Receipt recorded across ${processed} bill(s) for "${selectedPartyName}".`)
+        alert(`Receipt recorded across ${processed} selected bill(s) for "${selectedPartyName}".`)
       } else {
         if (!selectedBill) {
           alert('Please select a bill')
@@ -370,7 +393,9 @@ function SalesPaymentEntryPageContent() {
       setSelectedBank('')
       setTxnRef('')
       setNote('')
-      setMergeSamePartyBills(false)
+      setPaymentFlow('single')
+      setMultiBillSelection([])
+      setMultiBillFilter('')
 
       // Refresh bills to update balances
       await fetchSalesBills(companyId)
@@ -455,38 +480,106 @@ function SalesPaymentEntryPageContent() {
                     </div>
                   </div>
 
-                  <div>
-                    <Label htmlFor="bill">Select Bill</Label>
-                    <Select value={selectedBill} onValueChange={setSelectedBill}>
-                      <SelectTrigger>
-                        <SelectValue placeholder={selectedPartyName ? 'Select unpaid bill' : 'Select party first'} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {selectedPartyBills.map((bill) => (
-                          <SelectItem key={bill.id} value={bill.id}>
-                            {bill.billNo} - {bill.party.name} (Balance: ₹{bill.balanceAmount.toFixed(2)})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {selectedPartyName && (
-                      <p className="text-xs text-gray-500 mt-1">
-                        Pending for {selectedPartyName}: ₹{selectedPartyPendingTotal.toFixed(2)}
-                      </p>
-                    )}
+                  <div className="space-y-2">
+                    <Label>Receipt Flow</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        type="button"
+                        variant={paymentFlow === 'single' ? 'default' : 'outline'}
+                        onClick={() => setPaymentFlow('single')}
+                        size="sm"
+                      >
+                        Single bill
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={paymentFlow === 'multi' ? 'default' : 'outline'}
+                        onClick={() => setPaymentFlow('multi')}
+                        size="sm"
+                      >
+                        Multi-bill merge
+                      </Button>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {paymentFlow === 'multi'
+                        ? 'Select multiple unpaid invoices for the party and split one receipt across them (oldest first).'
+                        : 'Apply receipt to a single invoice.'}
+                    </p>
                   </div>
 
-                  <div className="flex items-center gap-2 rounded-md border border-dashed p-3 bg-gray-50">
-                    <input
-                      id="mergeSamePartyBills"
-                      type="checkbox"
-                      checked={mergeSamePartyBills}
-                      onChange={(e) => setMergeSamePartyBills(e.target.checked)}
-                    />
-                    <Label htmlFor="mergeSamePartyBills" className="cursor-pointer">
-                      Merge mode: auto-split receipt across all unpaid bills of selected party
-                    </Label>
-                  </div>
+                  {paymentFlow === 'single' ? (
+                    <div>
+                      <Label htmlFor="bill">Select Bill</Label>
+                      <Select value={selectedBill} onValueChange={setSelectedBill}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={selectedPartyName ? 'Select unpaid bill' : 'Select party first'} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {selectedPartyBills.map((bill) => (
+                            <SelectItem key={bill.id} value={bill.id}>
+                              {bill.billNo} - {bill.party.name} (Balance: ₹{bill.balanceAmount.toFixed(2)})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {selectedPartyName && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Pending for {selectedPartyName}: ₹{selectedPartyPendingTotal.toFixed(2)}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Label htmlFor="multiBillFilter">Select Invoices to Merge</Label>
+                      <Input
+                        id="multiBillFilter"
+                        value={multiBillFilter}
+                        onChange={(e) => setMultiBillFilter(e.target.value)}
+                        placeholder="Filter by invoice number..."
+                        className="pr-9"
+                      />
+                      <div className="rounded-md border p-2 bg-gray-50 max-h-48 overflow-y-auto space-y-2">
+                        {selectedPartyBills.length === 0 ? (
+                          <p className="text-sm text-gray-500">Select a party to view unpaid bills.</p>
+                        ) : (
+                          selectedPartyBills
+                            .filter((bill) => {
+                              const query = multiBillFilter.trim().toLowerCase()
+                              if (!query) return true
+                              return (
+                                bill.billNo.toLowerCase().includes(query) ||
+                                (bill.party?.name || '').toLowerCase().includes(query)
+                              )
+                            })
+                            .map((bill) => {
+                              const checked = multiBillSelection.includes(bill.id)
+                              return (
+                                <label
+                                  key={bill.id}
+                                  className={`flex items-start gap-3 rounded-md border px-3 py-2 cursor-pointer transition ${
+                                    checked ? 'border-blue-500 bg-white' : 'border-gray-200 bg-white hover:bg-gray-100'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="mt-1"
+                                    checked={checked}
+                                    onChange={() => toggleMultiBill(bill.id)}
+                                  />
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium truncate">{bill.billNo}</p>
+                                    <p className="text-xs text-gray-500">Balance: ₹{bill.balanceAmount.toFixed(2)} • {formatDateSafe(bill.billDate)}</p>
+                                  </div>
+                                </label>
+                              )
+                            })
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-600">
+                        Selected {selectedMultiBills.length} bill(s) • Combined balance: ₹{selectedMultiPendingTotal.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <Label htmlFor="receiptDate">Receipt Date</Label>
@@ -511,9 +604,14 @@ function SalesPaymentEntryPageContent() {
                       placeholder="Enter amount"
                       required
                     />
-                    {selectedBillData && (
+                    {paymentFlow === 'single' && selectedBillData && (
                       <p className="text-sm text-gray-500 mt-1">
                         Max receivable: ₹{selectedBillData.balanceAmount.toFixed(2)}
+                      </p>
+                    )}
+                    {paymentFlow === 'multi' && selectedMultiBills.length > 0 && (
+                      <p className="text-sm text-gray-500 mt-1">
+                        Combined balance across selected invoices: ₹{selectedMultiPendingTotal.toFixed(2)}
                       </p>
                     )}
                   </div>
