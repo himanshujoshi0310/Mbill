@@ -1,5 +1,4 @@
 'use client'
-/* eslint-disable react-hooks/set-state-in-effect */
 
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
@@ -62,6 +61,7 @@ export default function SpecialPurchaseEntryPage() {
   const [paidAmount, setPaidAmount] = useState('')
   const [balance, setBalance] = useState('')
   const [paidAmountError, setPaidAmountError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const toNonNegative = (value: string) => {
     if (value === '') return ''
     const parsed = Number(value)
@@ -270,9 +270,8 @@ export default function SpecialPurchaseEntryPage() {
     }
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
+  const submitSpecialPurchase = async (printAfterSave = false) => {
+    if (submitting) return
     // Basic validation
     if (!supplierInvoiceNo || !supplierName || !selectedProduct || !weight || !rate) {
       alert('Please fill all required fields')
@@ -334,6 +333,8 @@ export default function SpecialPurchaseEntryPage() {
         paymentStatus,
       }
 
+      setSubmitting(true)
+
       const response = await fetch('/api/special-purchase-bills', {
         method: 'POST',
         headers: {
@@ -345,15 +346,29 @@ export default function SpecialPurchaseEntryPage() {
       const responseData = await response.json()
 
       if (response.ok) {
+        if (printAfterSave && responseData?.specialPurchaseBill?.id) {
+          const printPath = companyId
+            ? `/purchase/special/${responseData.specialPurchaseBill.id}/print?companyId=${encodeURIComponent(companyId)}`
+            : `/purchase/special/${responseData.specialPurchaseBill.id}/print`
+          router.push(printPath)
+          return
+        }
         alert('Special purchase bill created successfully!')
-        router.push('/main/dashboard')
+        router.push('/purchase/list')
       } else {
         alert('Error creating special purchase bill: ' + (responseData.error || 'Unknown error'))
       }
     } catch (error) {
       console.error('Error:', error)
       alert('Error creating special purchase bill: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setSubmitting(false)
     }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    await submitSpecialPurchase(false)
   }
 
   if (loading) {
@@ -637,7 +652,12 @@ export default function SpecialPurchaseEntryPage() {
                   <Button type="button" variant="outline" onClick={() => router.back()}>
                     Cancel
                   </Button>
-                  <Button type="submit">Save Special Purchase Bill</Button>
+                  <Button type="button" variant="outline" disabled={submitting} onClick={() => void submitSpecialPurchase(true)}>
+                    Save & Print
+                  </Button>
+                  <Button type="submit" disabled={submitting}>
+                    {submitting ? 'Saving...' : 'Save Special Purchase Bill'}
+                  </Button>
                 </div>
               </form>
             </CardContent>

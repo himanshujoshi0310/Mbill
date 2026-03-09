@@ -33,12 +33,32 @@
     {
       "id": "d8d6fb78-d18c-498e-a7be-b995cb6618d8",
       "companyId": "cmm997iel00026l9r1uajahfk",
-      "name": "admin",
+      "name": "cash",
       "code": "C",
       "description": "none",
       "isActive": true,
       "createdAt": "2026-03-03T05:25:49.497Z",
-      "updatedAt": "2026-03-03T05:25:49.497Z"
+      "updatedAt": "2026-03-09T14:23:56.543Z"
+    },
+    {
+      "id": "669213ae-e695-471d-be70-0150fa5719dd",
+      "companyId": "cmm997iel00026l9r1uajahfk",
+      "name": "online",
+      "code": "O",
+      "description": null,
+      "isActive": true,
+      "createdAt": "2026-03-09T14:24:10.171Z",
+      "updatedAt": "2026-03-09T14:24:10.171Z"
+    },
+    {
+      "id": "b3e37a17-56a3-4f4d-b7c6-09b33d32c7e5",
+      "companyId": "cmm997iel00026l9r1uajahfk",
+      "name": "cheque",
+      "code": "CQ",
+      "description": null,
+      "isActive": true,
+      "createdAt": "2026-03-09T14:24:28.893Z",
+      "updatedAt": "2026-03-09T14:24:28.893Z"
     }
   ]
 }

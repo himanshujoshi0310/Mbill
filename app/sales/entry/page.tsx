@@ -496,27 +496,29 @@ export default function SalesEntryPage() {
         body: JSON.stringify(requestData),
       })
 
-      // Get response as text first to see raw content
       const responseText = await response.text()
+      let parsedResponse: any = {}
+      try {
+        parsedResponse = responseText ? JSON.parse(responseText) : {}
+      } catch {
+        parsedResponse = {}
+      }
 
       if (response.ok) {
+        const createdId = parsedResponse?.salesBillId || parsedResponse?.salesBill?.id
         alert('Sales bill created successfully!')
-        router.push('/sales/list')
-      } else {
-        let errorData
-        try {
-          errorData = JSON.parse(responseText)
-        } catch (parseError) {
-          console.error('Failed to parse error response:', parseError)
-          console.error('Response text that failed to parse:', responseText)
-          errorData = { error: 'Failed to parse error response', details: responseText, statusText: response.statusText }
+        if (createdId) {
+          router.push(`/sales/${createdId}/print?type=invoice`)
+        } else {
+          router.push('/sales/list')
         }
-        
-        console.error('API Error Response:', errorData)
-        console.error('Response Status Text:', response.statusText)
-        console.error('Response Status:', response.status)
-        
-        alert('Error creating sales bill: ' + (errorData.error || 'Unknown error'))
+      } else {
+        const errorMessage =
+          parsedResponse?.error ||
+          parsedResponse?.message ||
+          response.statusText ||
+          'Unknown error'
+        alert(`Error creating sales bill: ${errorMessage}`)
       }
     } catch (error) {
       console.error('Error:', error)

@@ -412,7 +412,10 @@ export default function PurchaseListPage() {
       router.push(printPath)
       return
     }
-    router.push(`/purchase/special-view?billId=${bill.id}`)
+    const specialPrintPath = companyId
+      ? `/purchase/special/${bill.id}/print?companyId=${encodeURIComponent(companyId)}`
+      : `/purchase/special/${bill.id}/print`
+    router.push(specialPrintPath)
   }
 
   const getBillWeightQt = (bill: PurchaseBill) => {

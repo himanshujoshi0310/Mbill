@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { normalizeOptionalString, normalizePhone, parseBooleanParam, requireRoles } from '@/lib/api-security'
 import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
+import { backfillMissingMandiAccountNumbers, generateUniqueMandiAccountNumber } from '@/lib/mandi-account-number'
 
 const companyPayloadSchema = z
   .object({
@@ -42,6 +43,8 @@ export async function GET(request: NextRequest) {
   if (!authResult.ok) return authResult.response
 
   try {
+    await backfillMissingMandiAccountNumbers(prisma)
+
     const searchParams = new URL(request.url).searchParams
     const includeDeleted = parseBooleanParam(searchParams.get('includeDeleted'))
     const traderIdFilter = normalizeTraderId(searchParams.get('traderId'))
@@ -167,13 +170,30 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    let mandiAccountNumber = normalized.mandiAccountNumber
+    if (!mandiAccountNumber) {
+      mandiAccountNumber = await generateUniqueMandiAccountNumber(prisma)
+    } else {
+      const duplicateMandiAccount = await prisma.company.findFirst({
+        where: {
+          mandiAccountNumber,
+          deletedAt: null
+        },
+        select: { id: true }
+      })
+
+      if (duplicateMandiAccount) {
+        return NextResponse.json({ error: 'Mandi account number already exists' }, { status: 409 })
+      }
+    }
+
     const company = await prisma.company.create({
       data: {
         name: normalized.name,
         traderId: normalized.traderId,
         address: normalized.address,
         phone: normalized.phone,
-        mandiAccountNumber: normalized.mandiAccountNumber,
+        mandiAccountNumber,
         locked: normalized.locked
       },
       include: {

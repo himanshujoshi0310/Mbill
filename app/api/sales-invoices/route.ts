@@ -151,7 +151,12 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    return NextResponse.json(result)
+    return NextResponse.json({
+      success: true,
+      salesBillId: result.salesBill.id,
+      salesBill: result.salesBill,
+      transportBill: result.transportBill
+    })
   } catch (error) {
     console.error('Error creating sales bill:', error)
     return NextResponse.json({ 

@@ -840,7 +840,7 @@ export default function SuperAdminCrudPage() {
                     <Input
                       value={modal.form.mandiAccountNumber || ''}
                       onChange={(e) => setModalField('mandiAccountNumber', e.target.value)}
-                      placeholder="Enter mandi account number"
+                      placeholder="Leave blank to auto-generate"
                     />
                   </div>
                   <div className="flex items-center gap-2 pt-6">

@@ -138,7 +138,8 @@ function SalesViewPageContent() {
   }
 
   const handlePrint = () => {
-    window.print()
+    if (!billId) return
+    router.push(`/sales/${billId}/print?type=invoice`)
   }
 
   const handleExportPDF = () => {

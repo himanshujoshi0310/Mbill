@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/prisma'
 import { normalizeOptionalString, normalizePhone, requireRoles } from '@/lib/api-security'
 import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
+import { generateUniqueMandiAccountNumber } from '@/lib/mandi-account-number'
 
 const onboardingSchema = z
   .object({
@@ -110,12 +111,14 @@ export async function POST(request: NextRequest) {
 
       const createdCompanies: Array<{ id: string; name: string; traderId: string | null; locked: boolean }> = []
       for (const company of parsed.data.companies) {
+        const mandiAccountNumber = await generateUniqueMandiAccountNumber(tx)
         const created = await tx.company.create({
           data: {
             traderId: trader.id,
             name: company.name.trim(),
             address: normalizeOptionalString(company.address),
             phone: company.phone ? normalizePhone(company.phone) : null,
+            mandiAccountNumber,
             locked: company.locked ?? false
           }
         })

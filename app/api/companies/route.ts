@@ -7,6 +7,7 @@ import {
   requireRoles
 } from '@/lib/api-security'
 import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
+import { generateUniqueMandiAccountNumber } from '@/lib/mandi-account-number'
 
 function setCORSHeaders() {
   const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000']
@@ -113,18 +114,23 @@ export async function POST(request: NextRequest) {
       }
 
       const now = Date.now()
-      const created = await prisma.$transaction(
-        Array.from({ length: count }).map((_, idx) =>
-          prisma.company.create({
+      const created = await prisma.$transaction(async (tx) => {
+        const rows = []
+        for (let idx = 0; idx < count; idx += 1) {
+          const mandiAccountNumber = await generateUniqueMandiAccountNumber(tx)
+          const row = await tx.company.create({
             data: {
               traderId: targetTraderId,
               name: `Demo Company ${now}-${idx + 1}`,
               address: `Demo Address ${idx + 1}`,
-              phone: `90000${String(now + idx).slice(-5)}`
+              phone: `90000${String(now + idx).slice(-5)}`,
+              mandiAccountNumber
             }
           })
-        )
-      )
+          rows.push(row)
+        }
+        return rows
+      })
 
       await Promise.all(
         created.map((company) =>
@@ -191,13 +197,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Trader not found' }, { status: 404, headers: setCORSHeaders() })
     }
 
+    const mandiAccountNumberValue =
+      typeof mandiAccountNumber === 'string' && mandiAccountNumber.trim()
+        ? mandiAccountNumber.trim()
+        : await generateUniqueMandiAccountNumber(prisma)
+
     const company = await prisma.company.create({
       data: {
         traderId: targetTraderId,
         name,
         address,
         phone,
-        mandiAccountNumber: typeof mandiAccountNumber === 'string' ? mandiAccountNumber.trim() || null : null
+        mandiAccountNumber: mandiAccountNumberValue
       }
     })
 
@@ -257,15 +268,18 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Company not found' }, { status: 404, headers: setCORSHeaders() })
     }
 
+    const nextMandiAccountNumber =
+      typeof mandiAccountNumber === 'string'
+        ? mandiAccountNumber.trim() || await generateUniqueMandiAccountNumber(prisma)
+        : undefined
+
     const company = await prisma.company.update({
       where: { id },
       data: {
         name,
         address,
         phone,
-        ...(typeof mandiAccountNumber === 'string'
-          ? { mandiAccountNumber: mandiAccountNumber.trim() || null }
-          : {})
+        ...(nextMandiAccountNumber !== undefined ? { mandiAccountNumber: nextMandiAccountNumber } : {})
       }
     })
 

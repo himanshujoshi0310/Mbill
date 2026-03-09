@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -70,6 +70,30 @@ function SpecialPurchaseViewContent() {
   const [loading, setLoading] = useState(true)
   const [bill, setBill] = useState<SpecialPurchaseBill | null>(null)
 
+  const fetchBill = useCallback(async (targetCompanyId: string, targetBillId: string, isCancelled: () => boolean) => {
+    try {
+      const response = await fetch(
+        `/api/special-purchase-bills?companyId=${targetCompanyId}&billId=${targetBillId}`
+      )
+      if (isCancelled()) return
+      if (!response.ok) {
+        throw new Error('Special purchase bill not found')
+      }
+      const payload = (await response.json().catch(() => null)) as SpecialPurchaseBill | null
+      if (isCancelled()) return
+      if (!payload?.id) {
+        throw new Error('Special purchase bill not found')
+      }
+      setBill(payload)
+      setLoading(false)
+    } catch (error) {
+      if (isCancelled() || isAbortError(error)) return
+      setLoading(false)
+      alert('Error loading special purchase bill')
+      router.back()
+    }
+  }, [router])
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -97,31 +121,7 @@ function SpecialPurchaseViewContent() {
     return () => {
       cancelled = true
     }
-  }, [billId, router])
-
-  const fetchBill = async (targetCompanyId: string, targetBillId: string, isCancelled: () => boolean) => {
-    try {
-      const response = await fetch(
-        `/api/special-purchase-bills?companyId=${targetCompanyId}&billId=${targetBillId}`
-      )
-      if (isCancelled()) return
-      if (!response.ok) {
-        throw new Error('Special purchase bill not found')
-      }
-      const payload = (await response.json().catch(() => null)) as SpecialPurchaseBill | null
-      if (isCancelled()) return
-      if (!payload?.id) {
-        throw new Error('Special purchase bill not found')
-      }
-      setBill(payload)
-      setLoading(false)
-    } catch (error) {
-      if (isCancelled() || isAbortError(error)) return
-      setLoading(false)
-      alert('Error loading special purchase bill')
-      router.back()
-    }
-  }
+  }, [billId, fetchBill, router])
 
   const handleDelete = async () => {
     if (!bill || !companyId) return
@@ -148,6 +148,14 @@ function SpecialPurchaseViewContent() {
 
     const payload = (await response.json().catch(() => ({}))) as { error?: string }
     alert(payload.error || 'Failed to delete special purchase bill')
+  }
+
+  const handlePrint = () => {
+    if (!bill) return
+    const printPath = companyId
+      ? `/purchase/special/${bill.id}/print?companyId=${encodeURIComponent(companyId)}`
+      : `/purchase/special/${bill.id}/print`
+    router.push(printPath)
   }
 
   if (loading) {
@@ -192,7 +200,7 @@ function SpecialPurchaseViewContent() {
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete
               </Button>
-              <Button variant="outline" onClick={() => window.print()}>
+              <Button variant="outline" onClick={handlePrint}>
                 <Printer className="w-4 h-4 mr-2" />
                 Print
               </Button>

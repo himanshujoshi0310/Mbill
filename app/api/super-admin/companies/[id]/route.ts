@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { normalizeOptionalString, normalizePhone, parseBooleanParam, requireRoles } from '@/lib/api-security'
 import { getAuditRequestMeta, writeAuditLog } from '@/lib/audit-logging'
+import { generateUniqueMandiAccountNumber } from '@/lib/mandi-account-number'
 
 const idParamsSchema = z.object({ id: z.string().trim().min(1, 'Company ID is required') })
 
@@ -106,6 +107,15 @@ async function getCompanyById(id: string, includeDeleted: boolean) {
   })
 
   if (!company) return null
+  let mandiAccountNumber = company.mandiAccountNumber
+
+  if (!company.deletedAt && (!mandiAccountNumber || !mandiAccountNumber.trim())) {
+    mandiAccountNumber = await generateUniqueMandiAccountNumber(prisma)
+    await prisma.company.update({
+      where: { id: company.id },
+      data: { mandiAccountNumber }
+    })
+  }
 
   return {
     id: company.id,
@@ -113,7 +123,7 @@ async function getCompanyById(id: string, includeDeleted: boolean) {
     traderId: company.traderId,
     address: company.address,
     phone: company.phone,
-    mandiAccountNumber: company.mandiAccountNumber,
+    mandiAccountNumber,
     locked: company.locked,
     deletedAt: company.deletedAt,
     createdAt: company.createdAt,
@@ -236,6 +246,32 @@ export async function PUT(
       )
     }
 
+    let nextMandiAccountNumber: string | undefined
+    if (normalized.mandiAccountNumber !== undefined) {
+      if (normalized.mandiAccountNumber === null) {
+        nextMandiAccountNumber = await generateUniqueMandiAccountNumber(prisma)
+      } else {
+        nextMandiAccountNumber = normalized.mandiAccountNumber
+      }
+    } else if (!existingCompany.mandiAccountNumber || !existingCompany.mandiAccountNumber.trim()) {
+      nextMandiAccountNumber = await generateUniqueMandiAccountNumber(prisma)
+    }
+
+    if (nextMandiAccountNumber) {
+      const duplicateMandiAccount = await prisma.company.findFirst({
+        where: {
+          id: { not: companyId },
+          mandiAccountNumber: nextMandiAccountNumber,
+          deletedAt: null
+        },
+        select: { id: true }
+      })
+
+      if (duplicateMandiAccount) {
+        return NextResponse.json({ error: 'Mandi account number already exists' }, { status: 409 })
+      }
+    }
+
     const updatedCompany = await prisma.$transaction(async (tx) => {
       const updated = await tx.company.update({
         where: { id: companyId },
@@ -244,7 +280,7 @@ export async function PUT(
           ...(normalized.traderId !== undefined ? { traderId: normalized.traderId } : {}),
           ...(normalized.address !== undefined ? { address: normalized.address } : {}),
           ...(normalized.phone !== undefined ? { phone: normalized.phone } : {}),
-          ...(normalized.mandiAccountNumber !== undefined ? { mandiAccountNumber: normalized.mandiAccountNumber } : {}),
+          ...(nextMandiAccountNumber !== undefined ? { mandiAccountNumber: nextMandiAccountNumber } : {}),
           ...(normalized.locked !== undefined ? { locked: normalized.locked } : {})
         }
       })

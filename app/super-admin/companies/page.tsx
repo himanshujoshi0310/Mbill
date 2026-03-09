@@ -190,6 +190,7 @@ export default function SuperAdminCompaniesPage() {
                   id="mandiAccountNumber"
                   value={formData.mandiAccountNumber}
                   onChange={(e) => setFormData((p) => ({ ...p, mandiAccountNumber: e.target.value }))}
+                  placeholder="Leave blank to auto-generate"
                 />
               </div>
               <div className="md:col-span-2 flex justify-end gap-2">

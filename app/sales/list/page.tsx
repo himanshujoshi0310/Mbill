@@ -315,7 +315,7 @@ export default function SalesListPage() {
   }
 
   const handlePrint = (billId: string) => {
-    void billId
+    router.push(`/sales/${billId}/print?type=invoice`)
   }
 
   const exportToExcel = () => {
