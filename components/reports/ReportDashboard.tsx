@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BarChart3, Download, Filter, RefreshCw, Search, Table2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -43,17 +43,21 @@ type ModeBucket = Exclude<ModeFilter, 'all'>
 interface CompanyRecord {
   id: string
   name: string
-  trader?: {
-    id: string
-    name: string
-  } | null
 }
 
 interface BankRecord {
-  id?: string
-  companyId?: string
   name?: string
   ifscCode?: string
+}
+
+interface FarmerRecord {
+  name?: string
+  address?: string
+  phone1?: string
+  krashakAnubandhNumber?: string
+  ifscCode?: string
+  accountNo?: string
+  bankName?: string
 }
 
 interface PartyRecord {
@@ -62,10 +66,31 @@ interface PartyRecord {
   phone1?: string
 }
 
+interface PurchaseItemRecord {
+  qty?: number
+  rate?: number
+  hammali?: number
+}
+
 interface SalesItemRecord {
   weight?: number
   rate?: number
-  amount?: number
+}
+
+interface PurchaseBillRecord {
+  id: string
+  companyId: string
+  billNo: string
+  billDate: string
+  totalAmount?: number
+  paidAmount?: number
+  status?: string
+  farmerNameSnapshot?: string
+  farmerAddressSnapshot?: string
+  farmerContactSnapshot?: string
+  krashakAnubandhSnapshot?: string
+  farmer?: FarmerRecord
+  purchaseItems?: PurchaseItemRecord[]
 }
 
 interface SalesBillRecord {
@@ -75,21 +100,16 @@ interface SalesBillRecord {
   billDate: string
   totalAmount?: number
   receivedAmount?: number
-  balanceAmount?: number
   status?: string
-  company?: {
-    id?: string
-    name?: string
-  }
   party?: PartyRecord
   salesItems?: SalesItemRecord[]
 }
 
 interface PaymentRecord {
   id: string
+  billType?: string
   billId: string
   billNo?: string
-  billType?: string
   payDate?: string
   amount?: number
   mode?: string
@@ -101,14 +121,14 @@ interface PaymentRecord {
   ifscCode?: string
   beneficiaryBankAccount?: string
   bankNameSnapshot?: string
-  bankBranchSnapshot?: string
-  asFlag?: string
   txnRef?: string
+  asFlag?: string
 }
 
 interface CompanyDataset {
   companyId: string
   companyName: string
+  purchaseBills: PurchaseBillRecord[]
   salesBills: SalesBillRecord[]
   payments: PaymentRecord[]
   banks: BankRecord[]
@@ -215,6 +235,20 @@ const passesDateRange = (value: string | undefined, from: Date | null, to: Date 
   return date >= from && date <= to
 }
 
+const derivePaymentSplit = (payment: PaymentRecord, modeBucket: ModeBucket): { cash: number; online: number } => {
+  const amount = normalizeAmount(payment.amount)
+  const explicitCash = normalizeAmount(payment.cashAmount)
+  const explicitOnline = normalizeAmount(payment.onlinePayAmount)
+
+  if (explicitCash > 0 || explicitOnline > 0) {
+    return { cash: explicitCash, online: explicitOnline }
+  }
+
+  if (modeBucket === 'cash') return { cash: amount, online: 0 }
+  if (modeBucket === 'online' || modeBucket === 'bank') return { cash: 0, online: amount }
+  return { cash: 0, online: 0 }
+}
+
 export default function ReportDashboard({
   initialCompanyId,
   embedded = false,
@@ -224,7 +258,7 @@ export default function ReportDashboard({
   const firstDay = useMemo(() => new Date(today.getFullYear(), today.getMonth(), 1), [today])
 
   const [companies, setCompanies] = useState<CompanyRecord[]>([])
-  const [scope, setScope] = useState<ReportScope>('company')
+  const [scope, setScope] = useState<ReportScope>(initialCompanyId ? 'company' : 'individual-trader')
   const [selectedCompanyId, setSelectedCompanyId] = useState(initialCompanyId || '')
   const [dateFrom, setDateFrom] = useState(toDateInputValue(firstDay))
   const [dateTo, setDateTo] = useState(toDateInputValue(today))
@@ -241,10 +275,12 @@ export default function ReportDashboard({
   const [loadingCompanies, setLoadingCompanies] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [lastGeneratedAt, setLastGeneratedAt] = useState('')
+  const [autoScopeFallbackDone, setAutoScopeFallbackDone] = useState(false)
 
   useEffect(() => {
     if (initialCompanyId) {
       setSelectedCompanyId(initialCompanyId)
+      setScope('company')
     }
   }, [initialCompanyId])
 
@@ -267,9 +303,12 @@ export default function ReportDashboard({
         setCompanies(rows)
 
         const availableIds = new Set(rows.map((row) => row.id))
-        const preferredId = initialCompanyId && availableIds.has(initialCompanyId)
-          ? initialCompanyId
-          : rows[0]?.id || ''
+        const preferredId =
+          initialCompanyId && availableIds.has(initialCompanyId)
+            ? initialCompanyId
+            : selectedCompanyId && availableIds.has(selectedCompanyId)
+              ? selectedCompanyId
+              : rows[0]?.id || ''
 
         setSelectedCompanyId(preferredId)
       } catch (error) {
@@ -290,9 +329,9 @@ export default function ReportDashboard({
     return () => {
       cancelled = true
     }
-  }, [initialCompanyId])
+  }, [initialCompanyId, selectedCompanyId])
 
-  const generateReport = async () => {
+  const generateReport = useCallback(async () => {
     if (!dateFrom || !dateTo) {
       setErrorMessage('Please select date range before generating the report.')
       return
@@ -318,7 +357,6 @@ export default function ReportDashboard({
     }
 
     setLoading(true)
-    setErrorMessage('')
 
     try {
       const companyNameMap = new Map(companies.map((company) => [company.id, company.name]))
@@ -327,25 +365,26 @@ export default function ReportDashboard({
 
       const datasets = await Promise.all(
         targetCompanyIds.map(async (companyId) => {
-          const [salesRes, paymentRes, banksRes] = await Promise.all([
-            fetch(`/api/sales-bills?companyId=${encodeURIComponent(companyId)}&dateFrom=${queryFrom}&dateTo=${queryTo}`),
-            fetch(`/api/payments?companyId=${encodeURIComponent(companyId)}&billType=sales`),
+          const [purchaseRes, salesRes, paymentRes, banksRes] = await Promise.all([
+            fetch(`/api/purchase-bills?companyId=${encodeURIComponent(companyId)}&dateFrom=${queryFrom}&dateTo=${queryTo}`),
+            fetch(`/api/sales-bills?companyId=${encodeURIComponent(companyId)}`),
+            fetch(`/api/payments?companyId=${encodeURIComponent(companyId)}`),
             fetch(`/api/banks?companyId=${encodeURIComponent(companyId)}`)
           ])
 
-          if (!salesRes.ok) {
-            throw new Error(`Failed to load sales bills for ${companyNameMap.get(companyId) || companyId}`)
+          if (!purchaseRes.ok && !salesRes.ok) {
+            throw new Error(`Failed to load bills for ${companyNameMap.get(companyId) || companyId}`)
           }
 
-          const salesPayload = await salesRes.json().catch(() => [])
+          const purchasePayload = purchaseRes.ok ? await purchaseRes.json().catch(() => []) : []
+          const salesPayload = salesRes.ok ? await salesRes.json().catch(() => []) : []
           const paymentPayload = paymentRes.ok ? await paymentRes.json().catch(() => []) : []
           const bankPayload = banksRes.ok ? await banksRes.json().catch(() => []) : []
 
-          const companyName = companyNameMap.get(companyId) || companyId
-
           return {
             companyId,
-            companyName,
+            companyName: companyNameMap.get(companyId) || companyId,
+            purchaseBills: normalizeCollection<PurchaseBillRecord>(purchasePayload),
             salesBills: normalizeCollection<SalesBillRecord>(salesPayload),
             payments: normalizeCollection<PaymentRecord>(paymentPayload),
             banks: normalizeCollection<BankRecord>(bankPayload)
@@ -360,10 +399,11 @@ export default function ReportDashboard({
         const paymentsByBill = new Map<string, PaymentRecord[]>()
 
         for (const payment of dataset.payments) {
-          if (String(payment.billType || '').toLowerCase() !== 'sales') continue
-          const rows = paymentsByBill.get(payment.billId) || []
+          const billType = String(payment.billType || '').toLowerCase()
+          const key = `${billType}:${payment.billId}`
+          const rows = paymentsByBill.get(key) || []
           rows.push(payment)
-          paymentsByBill.set(payment.billId, rows)
+          paymentsByBill.set(key, rows)
         }
 
         const bankNameByIfsc = new Map<string, string>()
@@ -376,21 +416,24 @@ export default function ReportDashboard({
           }
         }
 
-        for (const bill of dataset.salesBills) {
-          const party = bill.party || {}
-          const item = Array.isArray(bill.salesItems) ? bill.salesItems[0] : undefined
+        for (const bill of dataset.purchaseBills) {
+          const farmer = bill.farmer || {}
+          const purchaseItems = Array.isArray(bill.purchaseItems) ? bill.purchaseItems : []
+          const totalWeight = purchaseItems.reduce((acc, item) => acc + normalizeAmount(item.qty), 0)
+          const totalHammali = purchaseItems.reduce((acc, item) => acc + normalizeAmount(item.hammali), 0)
+          const weightedRate = purchaseItems.reduce(
+            (acc, item) => acc + normalizeAmount(item.qty) * normalizeAmount(item.rate),
+            0
+          )
 
-          const allBillPayments = (paymentsByBill.get(bill.id) || []).sort(
+          const allPayments = (paymentsByBill.get(`purchase:${bill.id}`) || []).sort(
             (a, b) => toTimestamp(b.payDate) - toTimestamp(a.payDate)
           )
-          const paymentsInRange = allBillPayments.filter((payment) => passesDateRange(payment.payDate, fromDate, toDate))
+          const paymentsInRange = allPayments.filter((payment) => passesDateRange(payment.payDate, fromDate, toDate))
           const billInRange = passesDateRange(bill.billDate, fromDate, toDate)
+          if (!billInRange && paymentsInRange.length === 0) continue
 
-          if (!billInRange && paymentsInRange.length === 0) {
-            continue
-          }
-
-          const effectivePayments = paymentsInRange.length > 0 ? paymentsInRange : allBillPayments
+          const effectivePayments = paymentsInRange.length > 0 ? paymentsInRange : allPayments
 
           let cashAmount = 0
           let onlineAmount = 0
@@ -401,26 +444,111 @@ export default function ReportDashboard({
 
           for (const payment of effectivePayments) {
             const modeBucket = resolveModeBucket(payment.mode)
-            const paymentAmount = normalizeAmount(payment.amount)
-            const paymentCashAmount = normalizeAmount(payment.cashAmount)
-            const paymentOnlineAmount = normalizeAmount(payment.onlinePayAmount)
-            const derivedCashAmount =
-              paymentCashAmount > 0 ? paymentCashAmount : modeBucket === 'cash' ? paymentAmount : 0
-            const derivedOnlineAmount =
-              paymentOnlineAmount > 0
-                ? paymentOnlineAmount
-                : modeBucket === 'online' || modeBucket === 'bank'
-                  ? paymentAmount
-                  : 0
+            const split = derivePaymentSplit(payment, modeBucket)
 
             if (modeBucket === 'cash') {
-              cashAmount += derivedCashAmount
+              cashAmount += split.cash
               if (!cashPaymentDate) cashPaymentDate = formatCompactDate(payment.cashPaymentDate || payment.payDate)
             } else if (modeBucket === 'bank') {
-              bankAmount += derivedOnlineAmount
+              bankAmount += split.online
               if (!bankPaymentDate) bankPaymentDate = formatCompactDate(payment.onlinePaymentDate || payment.payDate)
             } else if (modeBucket === 'online') {
-              onlineAmount += derivedOnlineAmount
+              onlineAmount += split.online
+              if (!onlinePaymentDate) onlinePaymentDate = formatCompactDate(payment.onlinePaymentDate || payment.payDate)
+            }
+          }
+
+          if (effectivePayments.length === 0 && normalizeAmount(bill.paidAmount) > 0) {
+            cashAmount = normalizeAmount(bill.paidAmount)
+            cashPaymentDate = formatCompactDate(bill.billDate)
+          }
+
+          const netOnlineAmount = onlineAmount + bankAmount
+          const latestPayment = effectivePayments[0]
+
+          let modeBucket: ModeBucket = 'none'
+          if (cashAmount > 0 && netOnlineAmount > 0) modeBucket = 'mixed'
+          else if (cashAmount > 0) modeBucket = 'cash'
+          else if (bankAmount > 0) modeBucket = 'bank'
+          else if (onlineAmount > 0) modeBucket = 'online'
+
+          const status = String(bill.status || 'unpaid').toLowerCase()
+          const sellerIfsc = String(farmer.ifscCode || latestPayment?.ifscCode || '').trim().toUpperCase()
+          const bankName =
+            String(farmer.bankName || latestPayment?.bankNameSnapshot || '').trim() ||
+            (sellerIfsc ? bankNameByIfsc.get(sellerIfsc) || '' : '') ||
+            'Not Available'
+
+          if (bankName && bankName !== 'Not Available') collectedBanks.add(bankName)
+
+          const row: ReportRow = {
+            Seller_Name: String(bill.farmerNameSnapshot || farmer.name || '').trim(),
+            Seller_Address: String(bill.farmerAddressSnapshot || farmer.address || '').trim(),
+            SellerMob: String(bill.farmerContactSnapshot || farmer.phone1 || '').trim(),
+            Anubandh_No: String(bill.krashakAnubandhSnapshot || farmer.krashakAnubandhNumber || '').trim(),
+            Anubandh_Date: formatCompactDate(bill.billDate),
+            Bhugtan_No: String(latestPayment?.billNo || bill.billNo || '').trim(),
+            Bhugtan_Date: formatCompactDate(latestPayment?.payDate),
+            Auction_Rate: round2(totalWeight > 0 ? weightedRate / totalWeight : normalizeAmount(purchaseItems[0]?.rate)),
+            Actual_Weight: round3(totalWeight),
+            Total_Hammali_Toul: round2(totalHammali),
+            Farmer_Payment: round2(normalizeAmount(bill.totalAmount)),
+            Payment_Mode: resolveModeCode(modeBucket),
+            CashAmount: round2(cashAmount),
+            Cash_Payment_Date: cashPaymentDate,
+            Online_Pay_Amount: round2(netOnlineAmount),
+            Online_Payment_Date: onlinePaymentDate || bankPaymentDate,
+            IFSC_Code: sellerIfsc || '0',
+            Farmer_BankAccount: String(farmer.accountNo || latestPayment?.beneficiaryBankAccount || '').trim() || '0',
+            UTR: String(latestPayment?.txnRef || '').trim() || '0',
+            ASFlag: String(latestPayment?.asFlag || '').trim() || statusToFlag(status),
+            Bank_Name: bankName,
+            Company_Name: dataset.companyName,
+            _status: status,
+            _modeBucket: modeBucket,
+            _sortTs: toTimestamp(latestPayment?.payDate) || toTimestamp(bill.billDate)
+          }
+
+          reportRows.push(row)
+        }
+
+        for (const bill of dataset.salesBills) {
+          const party = bill.party || {}
+          const salesItems = Array.isArray(bill.salesItems) ? bill.salesItems : []
+          const totalWeight = salesItems.reduce((acc, item) => acc + normalizeAmount(item.weight), 0)
+          const weightedRate = salesItems.reduce(
+            (acc, item) => acc + normalizeAmount(item.weight) * normalizeAmount(item.rate),
+            0
+          )
+
+          const allPayments = (paymentsByBill.get(`sales:${bill.id}`) || []).sort(
+            (a, b) => toTimestamp(b.payDate) - toTimestamp(a.payDate)
+          )
+          const paymentsInRange = allPayments.filter((payment) => passesDateRange(payment.payDate, fromDate, toDate))
+          const billInRange = passesDateRange(bill.billDate, fromDate, toDate)
+          if (!billInRange && paymentsInRange.length === 0) continue
+
+          const effectivePayments = paymentsInRange.length > 0 ? paymentsInRange : allPayments
+
+          let cashAmount = 0
+          let onlineAmount = 0
+          let bankAmount = 0
+          let cashPaymentDate = ''
+          let onlinePaymentDate = ''
+          let bankPaymentDate = ''
+
+          for (const payment of effectivePayments) {
+            const modeBucket = resolveModeBucket(payment.mode)
+            const split = derivePaymentSplit(payment, modeBucket)
+
+            if (modeBucket === 'cash') {
+              cashAmount += split.cash
+              if (!cashPaymentDate) cashPaymentDate = formatCompactDate(payment.cashPaymentDate || payment.payDate)
+            } else if (modeBucket === 'bank') {
+              bankAmount += split.online
+              if (!bankPaymentDate) bankPaymentDate = formatCompactDate(payment.onlinePaymentDate || payment.payDate)
+            } else if (modeBucket === 'online') {
+              onlineAmount += split.online
               if (!onlinePaymentDate) onlinePaymentDate = formatCompactDate(payment.onlinePaymentDate || payment.payDate)
             }
           }
@@ -434,15 +562,10 @@ export default function ReportDashboard({
           const latestPayment = effectivePayments[0]
 
           let modeBucket: ModeBucket = 'none'
-          if (cashAmount > 0 && netOnlineAmount > 0) {
-            modeBucket = 'mixed'
-          } else if (cashAmount > 0) {
-            modeBucket = 'cash'
-          } else if (bankAmount > 0) {
-            modeBucket = 'bank'
-          } else if (onlineAmount > 0) {
-            modeBucket = 'online'
-          }
+          if (cashAmount > 0 && netOnlineAmount > 0) modeBucket = 'mixed'
+          else if (cashAmount > 0) modeBucket = 'cash'
+          else if (bankAmount > 0) modeBucket = 'bank'
+          else if (onlineAmount > 0) modeBucket = 'online'
 
           const status = String(bill.status || 'unpaid').toLowerCase()
           const sellerIfsc = String(latestPayment?.ifscCode || '').trim().toUpperCase()
@@ -451,9 +574,7 @@ export default function ReportDashboard({
             (sellerIfsc ? bankNameByIfsc.get(sellerIfsc) || '' : '') ||
             'Not Available'
 
-          if (bankName && bankName !== 'Not Available') {
-            collectedBanks.add(bankName)
-          }
+          if (bankName && bankName !== 'Not Available') collectedBanks.add(bankName)
 
           const row: ReportRow = {
             Seller_Name: String(party.name || '').trim(),
@@ -463,8 +584,8 @@ export default function ReportDashboard({
             Anubandh_Date: formatCompactDate(bill.billDate),
             Bhugtan_No: String(latestPayment?.billNo || bill.billNo || '').trim(),
             Bhugtan_Date: formatCompactDate(latestPayment?.payDate),
-            Auction_Rate: round2(normalizeAmount(item?.rate)),
-            Actual_Weight: round3(normalizeAmount(item?.weight)),
+            Auction_Rate: round2(totalWeight > 0 ? weightedRate / totalWeight : normalizeAmount(salesItems[0]?.rate)),
+            Actual_Weight: round3(totalWeight),
             Total_Hammali_Toul: 0,
             Farmer_Payment: round2(normalizeAmount(bill.totalAmount)),
             Payment_Mode: resolveModeCode(modeBucket),
@@ -493,9 +614,22 @@ export default function ReportDashboard({
         return String(a.Seller_Name).localeCompare(String(b.Seller_Name))
       })
 
+      if (reportRows.length === 0 && scope === 'company' && companies.length > 1 && !autoScopeFallbackDone) {
+        setAutoScopeFallbackDone(true)
+        setScope('individual-trader')
+        setErrorMessage('No records found for selected company. Switched to Individual Trader scope.')
+        return
+      }
+
       setGeneratedRows(reportRows)
       setAvailableBanks(Array.from(collectedBanks).sort((a, b) => a.localeCompare(b)))
       setLastGeneratedAt(new Date().toLocaleString('en-IN'))
+
+      if (reportRows.length === 0) {
+        setErrorMessage('No records found for selected filters. Try wider date range or Individual Trader scope.')
+      } else {
+        setErrorMessage('')
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Report generation failed.'
       setErrorMessage(message)
@@ -504,7 +638,13 @@ export default function ReportDashboard({
     } finally {
       setLoading(false)
     }
-  }
+  }, [dateFrom, dateTo, scope, selectedCompanyId, companies, autoScopeFallbackDone])
+
+  useEffect(() => {
+    if (loadingCompanies) return
+    if (scope === 'company' && !selectedCompanyId) return
+    void generateReport()
+  }, [loadingCompanies, scope, selectedCompanyId, dateFrom, dateTo, generateReport])
 
   const filteredRows = useMemo(() => {
     const query = searchTerm.trim().toLowerCase()
@@ -647,6 +787,7 @@ export default function ReportDashboard({
     setPaymentModeFilter('all')
     setBankFilter('all')
     setSearchTerm('')
+    setAutoScopeFallbackDone(false)
   }
 
   return (
@@ -654,7 +795,7 @@ export default function ReportDashboard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className={embedded ? 'text-2xl font-bold text-slate-900' : 'text-3xl font-bold text-slate-900'}>Report</h2>
-          <p className="text-sm text-slate-500">Dashboard report aligned to export template headers and payment history workflow.</p>
+          <p className="text-sm text-slate-500">Connected to purchase + sales + payment attributes. CSV exports only selected headers.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {!embedded && onBackToDashboard && (
@@ -686,13 +827,19 @@ export default function ReportDashboard({
       <Card>
         <CardHeader>
           <CardTitle>Filter Options</CardTitle>
-          <CardDescription>Use report scope + filters, then click Generate Report.</CardDescription>
+          <CardDescription>Report auto-refreshes on company/scope/date changes.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-2">
               <Label>Report Scope</Label>
-              <Select value={scope} onValueChange={(value) => setScope(value as ReportScope)}>
+              <Select
+                value={scope}
+                onValueChange={(value) => {
+                  setScope(value as ReportScope)
+                  setAutoScopeFallbackDone(false)
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select scope" />
                 </SelectTrigger>
@@ -707,7 +854,10 @@ export default function ReportDashboard({
               <Label>Company</Label>
               <Select
                 value={selectedCompanyId || 'none'}
-                onValueChange={(value) => setSelectedCompanyId(value === 'none' ? '' : value)}
+                onValueChange={(value) => {
+                  setSelectedCompanyId(value === 'none' ? '' : value)
+                  setAutoScopeFallbackDone(false)
+                }}
                 disabled={scope === 'individual-trader' || companies.length === 0}
               >
                 <SelectTrigger>
@@ -799,8 +949,8 @@ export default function ReportDashboard({
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-            <span className="rounded-full bg-slate-100 px-3 py-1">Search and tick headers to export selected columns only</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1">Selected: {visibleHeaders.length} / {CSV_HEADERS.length}</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1">Connected with sales + purchase bills + payments</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1">Selected headers: {visibleHeaders.length} / {CSV_HEADERS.length}</span>
             {lastGeneratedAt && <span className="rounded-full bg-slate-100 px-3 py-1">Last generated: {lastGeneratedAt}</span>}
           </div>
         </CardContent>
@@ -847,7 +997,7 @@ export default function ReportDashboard({
             <Table2 className="h-5 w-5" />
             Report Includes
           </CardTitle>
-          <CardDescription>Search a header, tick checkbox, and export only selected columns.</CardDescription>
+          <CardDescription>Search header and tick checkbox to control CSV/table columns.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="mb-4 flex flex-wrap items-center gap-2">
