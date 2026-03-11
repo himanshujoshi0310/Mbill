@@ -329,8 +329,20 @@ export default function SalesEntryPage() {
   }
 
   const handleAddItem = () => {
-    if (!currentItem.salesItemId || !currentItem.noOfBags || !currentItem.weightPerBag || !currentItem.rate) {
-      alert('Please fill all item fields')
+    if (!currentItem.salesItemId) {
+      alert('Sales item is required')
+      return
+    }
+    if (!currentItem.noOfBags) {
+      alert('No. of Bags is required')
+      return
+    }
+    if (!currentItem.weightPerBag) {
+      alert('Weight / Bag is required')
+      return
+    }
+    if (!currentItem.rate) {
+      alert('Rate / Qt is mandatory')
       return
     }
 
@@ -822,7 +834,9 @@ export default function SalesEntryPage() {
                           />
                         </div>
                         <div>
-                          <Label htmlFor="itemRate">Rate / Qt</Label>
+                          <Label htmlFor="itemRate">
+                            Rate / Qt <span className="text-red-600">*</span>
+                          </Label>
                           <Input
                             id="itemRate"
                             type="number"
@@ -831,6 +845,7 @@ export default function SalesEntryPage() {
                             value={currentItem.rate}
                             onChange={(e) => setCurrentItem({...currentItem, rate: toNonNegative(e.target.value)})}
                             placeholder="Enter rate"
+                            required
                           />
                         </div>
                         <div>

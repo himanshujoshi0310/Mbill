@@ -21,6 +21,15 @@ const paymentCreateSchema = z
     amount: z.coerce.number().positive('Amount must be greater than zero'),
     mode: z.string().trim().min(1, 'Payment mode is required'),
     bankId: z.string().trim().optional().nullable(),
+    cashAmount: z.coerce.number().nonnegative().optional().nullable(),
+    cashPaymentDate: z.string().trim().optional().nullable(),
+    onlinePayAmount: z.coerce.number().nonnegative().optional().nullable(),
+    onlinePaymentDate: z.string().trim().optional().nullable(),
+    ifscCode: z.string().trim().max(20).optional().nullable(),
+    beneficiaryBankAccount: z.string().trim().max(64).optional().nullable(),
+    bankNameSnapshot: z.string().trim().max(120).optional().nullable(),
+    bankBranchSnapshot: z.string().trim().max(120).optional().nullable(),
+    asFlag: z.string().trim().max(10).optional().nullable(),
     txnRef: z.string().trim().max(100).optional().nullable(),
     note: z.string().trim().max(400).optional().nullable(),
     status: z.enum(['pending', 'paid']).optional()
@@ -31,6 +40,13 @@ const clampNonNegative = (value: unknown): number => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 0
   return Math.max(0, parsed)
+}
+
+const parseOptionalDate = (value: unknown): Date | null => {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime())) return null
+  return parsed
 }
 
 export async function POST(request: NextRequest) {
@@ -96,6 +112,10 @@ export async function POST(request: NextRequest) {
     }
 
     const paymentStatus = data.status || 'paid'
+    const modeLower = (data.mode || '').toLowerCase()
+    const isCashMode = modeLower === 'cash' || modeLower === 'c'
+    const payDateValue = new Date(data.payDate)
+    const normalizedIfscCode = normalizeOptionalString(data.ifscCode)?.toUpperCase() || null
 
     const result = await prisma.$transaction(async (tx) => {
       const payment = await tx.payment.create({
@@ -107,6 +127,15 @@ export async function POST(request: NextRequest) {
           payDate: new Date(data.payDate),
           amount: data.amount,
           mode: data.mode,
+          cashAmount: data.cashAmount ?? (isCashMode ? data.amount : null),
+          cashPaymentDate: parseOptionalDate(data.cashPaymentDate) ?? (isCashMode ? payDateValue : null),
+          onlinePayAmount: data.onlinePayAmount ?? (!isCashMode ? data.amount : null),
+          onlinePaymentDate: parseOptionalDate(data.onlinePaymentDate) ?? (!isCashMode ? payDateValue : null),
+          ifscCode: normalizedIfscCode,
+          beneficiaryBankAccount: normalizeOptionalString(data.beneficiaryBankAccount),
+          bankNameSnapshot: normalizeOptionalString(data.bankNameSnapshot),
+          bankBranchSnapshot: normalizeOptionalString(data.bankBranchSnapshot),
+          asFlag: normalizeOptionalString(data.asFlag) || 'A',
           status: paymentStatus,
           txnRef: normalizeOptionalString(data.txnRef),
           note: normalizeOptionalString(data.note),

@@ -16,6 +16,15 @@ const updatePaymentSchema = z
     amount: z.coerce.number().positive().optional(),
     payDate: z.string().trim().optional(),
     mode: z.string().trim().min(1).optional(),
+    cashAmount: z.coerce.number().nonnegative().optional().nullable(),
+    cashPaymentDate: z.string().trim().optional().nullable(),
+    onlinePayAmount: z.coerce.number().nonnegative().optional().nullable(),
+    onlinePaymentDate: z.string().trim().optional().nullable(),
+    ifscCode: z.string().trim().max(20).optional().nullable(),
+    beneficiaryBankAccount: z.string().trim().max(64).optional().nullable(),
+    bankNameSnapshot: z.string().trim().max(120).optional().nullable(),
+    bankBranchSnapshot: z.string().trim().max(120).optional().nullable(),
+    asFlag: z.string().trim().max(10).optional().nullable(),
     txnRef: z.string().trim().max(100).optional().nullable(),
     note: z.string().trim().max(400).optional().nullable(),
     status: z.enum(['pending', 'paid']).optional()
@@ -26,11 +35,27 @@ const updatePaymentSchema = z
       value.amount !== undefined ||
       value.payDate !== undefined ||
       value.mode !== undefined ||
+      value.cashAmount !== undefined ||
+      value.cashPaymentDate !== undefined ||
+      value.onlinePayAmount !== undefined ||
+      value.onlinePaymentDate !== undefined ||
+      value.ifscCode !== undefined ||
+      value.beneficiaryBankAccount !== undefined ||
+      value.bankNameSnapshot !== undefined ||
+      value.bankBranchSnapshot !== undefined ||
+      value.asFlag !== undefined ||
       value.txnRef !== undefined ||
       value.note !== undefined ||
       value.status !== undefined,
     { message: 'At least one field is required' }
   )
+
+const parseOptionalDate = (value: unknown): Date | null => {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime())) return null
+  return parsed
+}
 
 async function recalculateBillTotals(tx: any, payment: { id: string; billType: string; billId: string }) {
   const aggregate = await tx.payment.aggregate({
@@ -178,6 +203,31 @@ export async function PUT(
           ...(parsedBody.data.amount !== undefined ? { amount: parsedBody.data.amount } : {}),
           ...(parsedBody.data.payDate !== undefined ? { payDate: new Date(parsedBody.data.payDate) } : {}),
           ...(parsedBody.data.mode !== undefined ? { mode: parsedBody.data.mode } : {}),
+          ...(parsedBody.data.cashAmount !== undefined ? { cashAmount: parsedBody.data.cashAmount ?? null } : {}),
+          ...(parsedBody.data.cashPaymentDate !== undefined
+            ? { cashPaymentDate: parseOptionalDate(parsedBody.data.cashPaymentDate) }
+            : {}),
+          ...(parsedBody.data.onlinePayAmount !== undefined
+            ? { onlinePayAmount: parsedBody.data.onlinePayAmount ?? null }
+            : {}),
+          ...(parsedBody.data.onlinePaymentDate !== undefined
+            ? { onlinePaymentDate: parseOptionalDate(parsedBody.data.onlinePaymentDate) }
+            : {}),
+          ...(parsedBody.data.ifscCode !== undefined
+            ? { ifscCode: normalizeOptionalString(parsedBody.data.ifscCode)?.toUpperCase() || null }
+            : {}),
+          ...(parsedBody.data.beneficiaryBankAccount !== undefined
+            ? { beneficiaryBankAccount: normalizeOptionalString(parsedBody.data.beneficiaryBankAccount) }
+            : {}),
+          ...(parsedBody.data.bankNameSnapshot !== undefined
+            ? { bankNameSnapshot: normalizeOptionalString(parsedBody.data.bankNameSnapshot) }
+            : {}),
+          ...(parsedBody.data.bankBranchSnapshot !== undefined
+            ? { bankBranchSnapshot: normalizeOptionalString(parsedBody.data.bankBranchSnapshot) }
+            : {}),
+          ...(parsedBody.data.asFlag !== undefined
+            ? { asFlag: normalizeOptionalString(parsedBody.data.asFlag) || null }
+            : {}),
           ...(parsedBody.data.txnRef !== undefined ? { txnRef: normalizeOptionalString(parsedBody.data.txnRef) } : {}),
           ...(parsedBody.data.note !== undefined ? { note: normalizeOptionalString(parsedBody.data.note) } : {}),
           ...(parsedBody.data.status !== undefined ? { status: parsedBody.data.status } : {})

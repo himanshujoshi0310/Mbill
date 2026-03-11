@@ -27,9 +27,10 @@ interface SalesBill {
       id: string
       name: string
     }
-    qty: number
-    rate: number
-    amount: number
+    qty?: number
+    weight?: number
+    rate?: number
+    amount?: number
   }>
   totalAmount: number
   receivedAmount: number
@@ -37,6 +38,51 @@ interface SalesBill {
   status: string
   createdAt: string
   updatedAt: string
+}
+
+const clampNonNegative = (value: unknown): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
+function normalizeSalesBill(raw: any): SalesBill {
+  const totalAmount = clampNonNegative(raw?.totalAmount)
+  const receivedAmount = clampNonNegative(raw?.receivedAmount)
+  const balanceAmount = Math.max(0, totalAmount - receivedAmount)
+  const status = balanceAmount === 0 ? 'paid' : receivedAmount > 0 ? 'partial' : 'unpaid'
+
+  return {
+    id: String(raw?.id || ''),
+    billNo: String(raw?.billNo || ''),
+    billDate: String(raw?.billDate || ''),
+    party: {
+      id: String(raw?.party?.id || ''),
+      name: String(raw?.party?.name || ''),
+      address: String(raw?.party?.address || ''),
+      phone1: String(raw?.party?.phone1 || '')
+    },
+    salesItems: Array.isArray(raw?.salesItems)
+      ? raw.salesItems.map((item: any) => ({
+          id: String(item?.id || ''),
+          productId: String(item?.productId || ''),
+          product: {
+            id: String(item?.product?.id || ''),
+            name: String(item?.product?.name || '')
+          },
+          qty: clampNonNegative(item?.qty ?? item?.weight ?? 0),
+          weight: clampNonNegative(item?.weight ?? item?.qty ?? 0),
+          rate: clampNonNegative(item?.rate ?? 0),
+          amount: clampNonNegative(item?.amount ?? 0)
+        }))
+      : [],
+    totalAmount,
+    receivedAmount,
+    balanceAmount,
+    status,
+    createdAt: String(raw?.createdAt || ''),
+    updatedAt: String(raw?.updatedAt || '')
+  }
 }
 
 export default function SalesViewPage() {
@@ -83,9 +129,9 @@ function SalesViewPageContent() {
       if (!response.ok) {
         throw new Error('Sales bill not found')
       }
-      const billData: SalesBill = await response.json()
+      const billData = await response.json()
       if (isCancelled()) return
-      setSalesBill(billData)
+      setSalesBill(normalizeSalesBill(billData))
       setLoading(false)
     } catch (error) {
       if (isCancelled() || isAbortError(error)) return
@@ -273,12 +319,12 @@ function SalesViewPageContent() {
                     </tr>
                   </thead>
                   <tbody>
-                    {salesBill.salesItems.map((item, index) => (
+                    {salesBill.salesItems.map((item) => (
                       <tr key={item.id} className="border-b">
                         <td className="p-2">{item.product.name}</td>
-                        <td className="text-right p-2">{item.qty}</td>
-                        <td className="text-right p-2">₹{item.rate.toFixed(2)}</td>
-                        <td className="text-right p-2">₹{item.amount.toFixed(2)}</td>
+                        <td className="text-right p-2">{clampNonNegative(item.weight ?? item.qty ?? 0).toFixed(2)}</td>
+                        <td className="text-right p-2">₹{clampNonNegative(item.rate).toFixed(2)}</td>
+                        <td className="text-right p-2">₹{clampNonNegative(item.amount).toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>

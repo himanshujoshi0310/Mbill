@@ -54,6 +54,12 @@ const formatDateSafe = (value: string): string => {
   return parsed.toLocaleDateString()
 }
 
+const isCashModeCode = (modeCode: string, modeName: string): boolean => {
+  const code = (modeCode || '').trim().toLowerCase()
+  const name = (modeName || '').trim().toLowerCase()
+  return code === 'cash' || code === 'c' || name.includes('cash') || name.includes('nakad')
+}
+
 export default function SalesPaymentEntryPage() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
@@ -84,6 +90,15 @@ function SalesPaymentEntryPageContent() {
   const [amount, setAmount] = useState('')
   const [selectedPaymentMode, setSelectedPaymentMode] = useState('')
   const [selectedBank, setSelectedBank] = useState('')
+  const [cashAmount, setCashAmount] = useState('')
+  const [cashPaymentDate, setCashPaymentDate] = useState(new Date().toISOString().split('T')[0])
+  const [onlinePayAmount, setOnlinePayAmount] = useState('')
+  const [onlinePaymentDate, setOnlinePaymentDate] = useState(new Date().toISOString().split('T')[0])
+  const [ifscCode, setIfscCode] = useState('')
+  const [beneficiaryBankAccount, setBeneficiaryBankAccount] = useState('')
+  const [bankNameSnapshot, setBankNameSnapshot] = useState('')
+  const [bankBranchSnapshot, setBankBranchSnapshot] = useState('')
+  const [asFlag, setAsFlag] = useState('A')
   const [txnRef, setTxnRef] = useState('')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -139,6 +154,14 @@ function SalesPaymentEntryPageContent() {
   const selectedBillData = useMemo(
     () => salesBills.find((bill) => bill.id === selectedBill),
     [salesBills, selectedBill]
+  )
+  const selectedPaymentModeObj = useMemo(
+    () => paymentModes.find((pm) => pm.code === selectedPaymentMode) || null,
+    [paymentModes, selectedPaymentMode]
+  )
+  const isCashMode = useMemo(
+    () => isCashModeCode(selectedPaymentModeObj?.code || selectedPaymentMode, selectedPaymentModeObj?.name || ''),
+    [selectedPaymentModeObj, selectedPaymentMode]
   )
 
   const selectedPartyPendingTotal = useMemo(
@@ -250,6 +273,44 @@ function SalesPaymentEntryPageContent() {
     setSelectedBill(selectedPartyBills[0]?.id || '')
   }, [selectedPartyName, selectedPartyBills, selectedBill])
 
+  useEffect(() => {
+    if (!selectedPaymentMode) return
+    if (!amount) {
+      setCashAmount('')
+      setOnlinePayAmount('')
+      return
+    }
+    if (isCashMode) {
+      setCashAmount(toNonNegative(amount))
+      return
+    }
+    setOnlinePayAmount(toNonNegative(amount))
+  }, [amount, isCashMode, selectedPaymentMode])
+
+  useEffect(() => {
+    if (isCashMode) {
+      setCashPaymentDate(receiptDate)
+      return
+    }
+    setOnlinePaymentDate(receiptDate)
+  }, [isCashMode, receiptDate])
+
+  useEffect(() => {
+    if (!selectedBank || selectedBank === 'none') {
+      setIfscCode('')
+      setBeneficiaryBankAccount('')
+      setBankNameSnapshot('')
+      setBankBranchSnapshot('')
+      return
+    }
+    const bank = banks.find((entry) => entry.id === selectedBank)
+    if (!bank) return
+    setIfscCode(bank.ifscCode || '')
+    setBeneficiaryBankAccount(bank.accountNumber || '')
+    setBankNameSnapshot(bank.name || '')
+    setBankBranchSnapshot(bank.branch || '')
+  }, [banks, selectedBank])
+
   const fetchSalesBills = async (targetCompanyId: string) => {
     try {
       const response = await fetch(`/api/sales-bills?companyId=${targetCompanyId}`)
@@ -282,6 +343,15 @@ function SalesPaymentEntryPageContent() {
       amount: targetAmount,
       mode: selectedPaymentMode,
       bankId: selectedBank === 'none' ? null : selectedBank,
+      cashAmount: isCashMode ? Number(cashAmount || targetAmount) : null,
+      cashPaymentDate: isCashMode ? cashPaymentDate || receiptDate : null,
+      onlinePayAmount: isCashMode ? null : Number(onlinePayAmount || targetAmount),
+      onlinePaymentDate: isCashMode ? null : onlinePaymentDate || receiptDate,
+      ifscCode: isCashMode ? null : ifscCode || null,
+      beneficiaryBankAccount: isCashMode ? null : beneficiaryBankAccount || null,
+      bankNameSnapshot: isCashMode ? null : bankNameSnapshot || null,
+      bankBranchSnapshot: isCashMode ? null : bankBranchSnapshot || null,
+      asFlag: isCashMode ? 'A' : asFlag || 'A',
       txnRef,
       note
     }
@@ -391,6 +461,15 @@ function SalesPaymentEntryPageContent() {
       setAmount('')
       setSelectedPaymentMode('')
       setSelectedBank('')
+      setCashAmount('')
+      setCashPaymentDate(new Date().toISOString().split('T')[0])
+      setOnlinePayAmount('')
+      setOnlinePaymentDate(new Date().toISOString().split('T')[0])
+      setIfscCode('')
+      setBeneficiaryBankAccount('')
+      setBankNameSnapshot('')
+      setBankBranchSnapshot('')
+      setAsFlag('A')
       setTxnRef('')
       setNote('')
       setPaymentFlow('single')
@@ -632,32 +711,113 @@ function SalesPaymentEntryPageContent() {
                     </Select>
                   </div>
 
-                  <div>
-                    <Label htmlFor="bank">Bank (Optional)</Label>
-                    <Select value={selectedBank} onValueChange={setSelectedBank}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select bank (for non-cash payments)" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">No Bank</SelectItem>
-                        {banks.map((bank) => (
-                          <SelectItem key={bank.id} value={bank.id}>
-                            {bank.name} ({bank.branch})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div>
-                    <Label htmlFor="txnRef">Transaction Reference</Label>
-                    <Input
-                      id="txnRef"
-                      value={txnRef}
-                      onChange={(e) => setTxnRef(e.target.value)}
-                      placeholder="Enter transaction reference (optional)"
-                    />
-                  </div>
+                  {selectedPaymentMode && (
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-3">
+                      <p className="text-sm font-semibold text-slate-700">Payment Attributes (Sales Report)</p>
+                      {isCashMode ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <Label htmlFor="cashAmount">Cash Amount</Label>
+                            <Input
+                              id="cashAmount"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={cashAmount}
+                              onChange={(e) => setCashAmount(toNonNegative(e.target.value))}
+                              placeholder="Enter cash amount"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="cashPaymentDate">Cash Payment Date</Label>
+                            <Input
+                              id="cashPaymentDate"
+                              type="date"
+                              value={cashPaymentDate}
+                              onChange={(e) => setCashPaymentDate(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <Label htmlFor="bank">Bank</Label>
+                            <Select value={selectedBank} onValueChange={setSelectedBank}>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select bank for online receipt" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">No Bank</SelectItem>
+                                {banks.map((bank) => (
+                                  <SelectItem key={bank.id} value={bank.id}>
+                                    {bank.name} ({bank.branch})
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div>
+                            <Label htmlFor="onlinePayAmount">Online Payment Amount</Label>
+                            <Input
+                              id="onlinePayAmount"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={onlinePayAmount}
+                              onChange={(e) => setOnlinePayAmount(toNonNegative(e.target.value))}
+                              placeholder="Enter online amount"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="onlinePaymentDate">Online Payment Date</Label>
+                            <Input
+                              id="onlinePaymentDate"
+                              type="date"
+                              value={onlinePaymentDate}
+                              onChange={(e) => setOnlinePaymentDate(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="ifscCode">IFSC Code</Label>
+                            <Input
+                              id="ifscCode"
+                              value={ifscCode}
+                              onChange={(e) => setIfscCode(e.target.value.toUpperCase())}
+                              placeholder="Bank IFSC"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="beneficiaryBankAccount">Bank Account</Label>
+                            <Input
+                              id="beneficiaryBankAccount"
+                              value={beneficiaryBankAccount}
+                              onChange={(e) => setBeneficiaryBankAccount(e.target.value)}
+                              placeholder="Beneficiary bank account"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="txnRef">UTR / Transaction Reference</Label>
+                            <Input
+                              id="txnRef"
+                              value={txnRef}
+                              onChange={(e) => setTxnRef(e.target.value)}
+                              placeholder="Enter UTR / transaction ref"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="asFlag">AS Flag</Label>
+                            <Input
+                              id="asFlag"
+                              value={asFlag}
+                              onChange={(e) => setAsFlag(e.target.value.toUpperCase())}
+                              maxLength={10}
+                              placeholder="A / S flag"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div>
                     <Label htmlFor="note">Note</Label>

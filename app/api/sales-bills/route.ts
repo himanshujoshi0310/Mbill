@@ -83,18 +83,25 @@ function sanitizeSalesBill<T extends {
   totalAmount?: unknown
   receivedAmount?: unknown
   balanceAmount?: unknown
+  status?: unknown
   salesItems?: Array<{ qty?: unknown; weight?: unknown; rate?: unknown; amount?: unknown }>
 }>(bill: T): T {
+  const safeTotalAmount = toNonNegativeNumber(bill.totalAmount, 0)
+  const safeReceivedAmount = toNonNegativeNumber(bill.receivedAmount, 0)
+  const safeBalanceAmount = Math.max(0, safeTotalAmount - safeReceivedAmount)
+  const safeStatus = safeBalanceAmount === 0 ? 'paid' : safeReceivedAmount > 0 ? 'partial' : 'unpaid'
+
   return {
     ...bill,
-    totalAmount: toNonNegativeNumber(bill.totalAmount, 0),
-    receivedAmount: toNonNegativeNumber(bill.receivedAmount, 0),
-    balanceAmount: toNonNegativeNumber(bill.balanceAmount, 0),
+    totalAmount: safeTotalAmount,
+    receivedAmount: safeReceivedAmount,
+    balanceAmount: safeBalanceAmount,
+    status: safeStatus,
     salesItems: Array.isArray(bill.salesItems)
       ? bill.salesItems.map((item) => ({
           ...item,
-          qty: toNonNegativeNumber(item.qty, 0),
-          weight: toNonNegativeNumber(item.weight, 0),
+          qty: toNonNegativeNumber(item.qty ?? item.weight, 0),
+          weight: toNonNegativeNumber(item.weight ?? item.qty, 0),
           rate: toNonNegativeNumber(item.rate, 0),
           amount: toNonNegativeNumber(item.amount, 0)
         }))

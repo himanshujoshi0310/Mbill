@@ -361,6 +361,15 @@ model Payment {
   payDate     DateTime
   amount      Float
   mode        String   // cash/online/bank
+  cashAmount  Float?
+  cashPaymentDate DateTime?
+  onlinePayAmount Float?
+  onlinePaymentDate DateTime?
+  ifscCode    String?
+  beneficiaryBankAccount String?
+  bankNameSnapshot String?
+  bankBranchSnapshot String?
+  asFlag      String?  @default("A")
   status      String   @default("pending")
   txnRef      String?
   note        String?

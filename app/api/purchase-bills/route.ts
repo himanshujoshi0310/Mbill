@@ -63,6 +63,7 @@ function sanitizePurchaseBill<T extends {
   totalAmount?: unknown
   paidAmount?: unknown
   balanceAmount?: unknown
+  status?: unknown
   purchaseItems?: Array<{
     qty?: unknown
     rate?: unknown
@@ -72,11 +73,16 @@ function sanitizePurchaseBill<T extends {
     totalWeightQt?: unknown
   }>
 }>(bill: T): T {
+  const safeTotalAmount = clampNonNegative(bill.totalAmount)
+  const safePaidAmount = clampNonNegative(bill.paidAmount)
+  const safeBalanceAmount = Math.max(0, safeTotalAmount - safePaidAmount)
+
   return {
     ...bill,
-    totalAmount: clampNonNegative(bill.totalAmount),
-    paidAmount: clampNonNegative(bill.paidAmount),
-    balanceAmount: clampNonNegative(bill.balanceAmount),
+    totalAmount: safeTotalAmount,
+    paidAmount: safePaidAmount,
+    balanceAmount: safeBalanceAmount,
+    status: deriveStatus(safePaidAmount, safeTotalAmount),
     purchaseItems: Array.isArray(bill.purchaseItems)
       ? bill.purchaseItems.map((item) => ({
           ...item,
@@ -96,14 +102,6 @@ function deriveStatus(paid: number, total: number): PaymentStatus {
   if (paid <= 0) return 'unpaid'
   if (paid >= total) return 'paid'
   return 'partial'
-}
-
-function normalizeStatus(statusValue: unknown, paid: number, total: number): PaymentStatus {
-  const raw = typeof statusValue === 'string' ? statusValue.trim().toLowerCase() : ''
-  if (raw === 'paid') return 'paid'
-  if (raw === 'partial' || raw === 'partially_paid' || raw === 'partially-paid') return 'partial'
-  if (raw === 'unpaid') return 'unpaid'
-  return deriveStatus(paid, total)
 }
 
 function parseBillDate(value: string): Date | NextResponse {
@@ -195,9 +193,6 @@ export async function POST(request: NextRequest) {
       rate,
       payableAmount,
       paidAmount,
-      balance,
-      paymentStatus,
-      status,
       userUnitName,
       kgEquivalent,
       totalWeightQt
@@ -231,13 +226,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Paid amount cannot exceed payable amount' }, { status: 400 })
     }
 
-    const parsedBalanceInput = parseNonNegativeNumber(balance)
-    const parsedBalance = parsedBalanceInput ?? Math.max(0, parsedPayable - parsedPaid)
+    const parsedBalance = Math.max(0, parsedPayable - parsedPaid)
     const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
     const parsedKgEquivalent = parseNonNegativeNumber(kgEquivalent)
     const parsedTotalWeightQt = parseNonNegativeNumber(totalWeightQt) ?? parsedWeight
 
-    const finalStatus = normalizeStatus(status ?? paymentStatus, parsedPaid, parsedPayable)
+    const finalStatus = deriveStatus(parsedPaid, parsedPayable)
     const auth = getRequestAuthContext(request)
     const userId = auth?.userId || 'system'
 
@@ -557,10 +551,6 @@ export async function PUT(request: NextRequest) {
       rate,
       payableAmount,
       paidAmount,
-      balanceAmount,
-      balance,
-      paymentStatus,
-      status,
       userUnitName,
       kgEquivalent,
       totalWeightQt
@@ -594,13 +584,12 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Paid amount cannot exceed payable amount' }, { status: 400 })
     }
 
-    const parsedBalanceInput = parseNonNegativeNumber(balanceAmount) ?? parseNonNegativeNumber(balance)
-    const parsedBalance = parsedBalanceInput ?? Math.max(0, parsedPayable - parsedPaid)
+    const parsedBalance = Math.max(0, parsedPayable - parsedPaid)
     const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
     const parsedKgEquivalent = parseNonNegativeNumber(kgEquivalent)
     const parsedTotalWeightQt = parseNonNegativeNumber(totalWeightQt) ?? parsedWeight
 
-    const finalStatus = normalizeStatus(status ?? paymentStatus, parsedPaid, parsedPayable)
+    const finalStatus = deriveStatus(parsedPaid, parsedPayable)
 
     const purchaseBill = await prisma.$transaction(async (tx) => {
       const existingBill = await tx.purchaseBill.findFirst({

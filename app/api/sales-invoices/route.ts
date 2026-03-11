@@ -7,7 +7,7 @@ const salesItemSchema = z.object({
   productId: z.string().min(1),
   weight: z.coerce.number().positive(),
   bags: z.coerce.number().int().min(0).optional(),
-  rate: z.coerce.number().nonnegative(),
+  rate: z.coerce.number().positive('Rate must be greater than 0'),
   amount: z.coerce.number().nonnegative()
 })
 

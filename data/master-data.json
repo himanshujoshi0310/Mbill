@@ -1,5 +1,19 @@
 {
-  "banks": [],
+  "banks": [
+    {
+      "id": "f1358c21-f3b3-4f08-9eee-8e6a0ea10086",
+      "companyId": "cmm997iel00026l9r1uajahfk",
+      "name": "bob",
+      "branch": "manasa",
+      "ifscCode": "BARB0131243",
+      "accountNumber": "436589096845698",
+      "address": "manasa",
+      "phone": "8655309645",
+      "isActive": true,
+      "createdAt": "2026-03-09T14:43:54.599Z",
+      "updatedAt": "2026-03-09T14:43:54.599Z"
+    }
+  ],
   "markas": [
     {
       "markaNumber": "MK-101",

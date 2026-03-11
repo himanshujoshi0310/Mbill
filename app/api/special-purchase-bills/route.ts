@@ -32,6 +32,12 @@ const writeSchema = z.object({
   status: z.string().optional().nullable()
 }).strict()
 
+function clampNonNegative(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, parsed)
+}
+
 function deriveStatus(paid: number, total: number): 'unpaid' | 'partial' | 'paid' {
   if (total <= 0) return 'unpaid'
   if (paid <= 0) return 'unpaid'
@@ -39,12 +45,42 @@ function deriveStatus(paid: number, total: number): 'unpaid' | 'partial' | 'paid
   return 'partial'
 }
 
-function normalizeStatus(statusValue: unknown, paid: number, total: number): 'unpaid' | 'partial' | 'paid' {
-  const raw = typeof statusValue === 'string' ? statusValue.trim().toLowerCase() : ''
-  if (raw === 'paid') return 'paid'
-  if (raw === 'partial' || raw === 'partially_paid' || raw === 'partially-paid') return 'partial'
-  if (raw === 'unpaid') return 'unpaid'
-  return deriveStatus(paid, total)
+function sanitizeSpecialPurchaseBill<T extends {
+  totalAmount?: unknown
+  paidAmount?: unknown
+  balanceAmount?: unknown
+  status?: unknown
+  specialPurchaseItems?: Array<{
+    noOfBags?: unknown
+    weight?: unknown
+    rate?: unknown
+    netAmount?: unknown
+    otherAmount?: unknown
+    grossAmount?: unknown
+  }>
+}>(bill: T): T {
+  const safeTotalAmount = clampNonNegative(bill.totalAmount)
+  const safePaidAmount = clampNonNegative(bill.paidAmount)
+  const safeBalanceAmount = Math.max(0, safeTotalAmount - safePaidAmount)
+
+  return {
+    ...bill,
+    totalAmount: safeTotalAmount,
+    paidAmount: safePaidAmount,
+    balanceAmount: safeBalanceAmount,
+    status: deriveStatus(safePaidAmount, safeTotalAmount),
+    specialPurchaseItems: Array.isArray(bill.specialPurchaseItems)
+      ? bill.specialPurchaseItems.map((item) => ({
+          ...item,
+          noOfBags: clampNonNegative(item.noOfBags),
+          weight: clampNonNegative(item.weight),
+          rate: clampNonNegative(item.rate),
+          netAmount: clampNonNegative(item.netAmount),
+          otherAmount: clampNonNegative(item.otherAmount),
+          grossAmount: clampNonNegative(item.grossAmount)
+        }))
+      : bill.specialPurchaseItems
+  } as T
 }
 
 export async function POST(request: NextRequest) {
@@ -78,8 +114,8 @@ export async function POST(request: NextRequest) {
     if (paidAmount > grossAmount) {
       return NextResponse.json({ error: 'Paid amount cannot exceed gross amount' }, { status: 400 })
     }
-    const balanceAmount = parseNonNegativeNumber(body.balance) ?? Math.max(0, grossAmount - paidAmount)
-    const normalizedStatus = normalizeStatus(body.status ?? body.paymentStatus, paidAmount, grossAmount)
+    const balanceAmount = Math.max(0, grossAmount - paidAmount)
+    const normalizedStatus = deriveStatus(paidAmount, grossAmount)
 
     const cookieStore = await cookies()
     const userId = cookieStore.get('userId')?.value || 'test-user'
@@ -202,7 +238,7 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: 'Special purchase bill not found' }, { status: 404 })
       }
 
-      return NextResponse.json(specialPurchaseBill)
+      return NextResponse.json(sanitizeSpecialPurchaseBill(specialPurchaseBill))
     }
 
     const whereClause: {
@@ -236,7 +272,7 @@ export async function GET(request: NextRequest) {
       orderBy: { createdAt: 'desc' },
     })
 
-    return NextResponse.json(specialPurchaseBills)
+    return NextResponse.json(specialPurchaseBills.map((bill) => sanitizeSpecialPurchaseBill(bill)))
   } catch (error) {
     console.error('Error fetching special purchase bills:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -278,11 +314,8 @@ export async function PUT(request: NextRequest) {
     if (paidAmount > grossAmount) {
       return NextResponse.json({ error: 'Paid amount cannot exceed gross amount' }, { status: 400 })
     }
-    const balanceAmount =
-      parseNonNegativeNumber(body.balanceAmount) ??
-      parseNonNegativeNumber(body.balance) ??
-      Math.max(0, grossAmount - paidAmount)
-    const normalizedStatus = normalizeStatus(body.status ?? body.paymentStatus, paidAmount, grossAmount)
+    const balanceAmount = Math.max(0, grossAmount - paidAmount)
+    const normalizedStatus = deriveStatus(paidAmount, grossAmount)
 
     let supplier = await prisma.supplier.findFirst({
       where: {
