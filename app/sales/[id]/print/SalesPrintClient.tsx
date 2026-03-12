@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import type { SalesBillPrintData } from '@/lib/sales-print'
@@ -22,12 +22,9 @@ function createRows<T>(items: T[], minRows: number): Array<T | null> {
 export default function SalesPrintClient({ printData }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const [printType, setPrintType] = useState<PrintType>('invoice')
-
-  useEffect(() => {
-    const typeFromUrl = searchParams.get('type')
-    setPrintType(typeFromUrl === 'dispatch' ? 'dispatch' : 'invoice')
-  }, [searchParams])
+  const [printType, setPrintType] = useState<PrintType>(
+    () => (searchParams.get('type') === 'dispatch' ? 'dispatch' : 'invoice')
+  )
 
   const updateType = (nextType: PrintType) => {
     setPrintType(nextType)

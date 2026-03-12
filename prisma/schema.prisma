@@ -431,6 +431,8 @@ model TransportBill {
   freightAmount Float?
   advance       Float?    @default(0)
   toPay         Float?    @default(0)
+  otherAmount   Float?    @default(0)
+  insuranceAmount Float?  @default(0)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,9 +16,9 @@ import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-conte
 
 interface Farmer {
   id: string
-  name: string
-  address: string
-  krashakAnubandhNumber: string
+  name?: string
+  address?: string
+  krashakAnubandhNumber?: string
 }
 
 interface Supplier {
@@ -52,7 +52,10 @@ interface RegularPurchaseBill {
   paidAmount: number
   balanceAmount: number
   status: string
-  farmer: Farmer
+  farmer?: Farmer | null
+  farmerNameSnapshot?: string | null
+  farmerAddressSnapshot?: string | null
+  krashakAnubandhSnapshot?: string | null
   purchaseItems: PurchaseItem[]
   type: 'regular'
 }
@@ -132,17 +135,7 @@ export default function PurchaseListPage() {
   const [payable, setPayable] = useState('')
   const [purchaseType, setPurchaseType] = useState<'all' | 'regular' | 'special'>('all')
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      await fetchPurchaseBills(() => cancelled)
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const fetchPurchaseBills = async (isCancelled: () => boolean = () => false) => {
+  const fetchPurchaseBills = useCallback(async (isCancelled: () => boolean = () => false) => {
     try {
       const companyIdParam = await resolveCompanyId(window.location.search)
       if (isCancelled()) return
@@ -239,9 +232,19 @@ export default function PurchaseListPage() {
       setPurchaseBills([])
       setLoading(false)
     }
-  }
+  }, [router])
 
-  const filteredBills = useMemo(() => {
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      await fetchPurchaseBills(() => cancelled)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [fetchPurchaseBills])
+
+  const filteredBills = (() => {
     let filtered = purchaseBills
 
     // Filter by purchase type
@@ -258,14 +261,18 @@ export default function PurchaseListPage() {
 
     if (partyName) {
       filtered = filtered.filter(bill => {
-        const party = bill.type === 'regular' ? bill.farmer : bill.supplier
+        const party = bill.type === 'regular'
+          ? { name: getRegularFarmerName(bill) }
+          : bill.supplier
         return party.name.toLowerCase().includes(partyName.toLowerCase())
       })
     }
 
     if (partyAddress) {
       filtered = filtered.filter(bill => {
-        const party = bill.type === 'regular' ? bill.farmer : bill.supplier
+        const party = bill.type === 'regular'
+          ? { address: getRegularFarmerAddress(bill) }
+          : bill.supplier
         return party.address?.toLowerCase().includes(partyAddress.toLowerCase())
       })
     }
@@ -313,7 +320,7 @@ export default function PurchaseListPage() {
     if (registrationNumber) {
       filtered = filtered.filter(bill => {
         if (bill.type === 'regular') {
-          return bill.farmer.krashakAnubandhNumber?.toLowerCase().includes(registrationNumber.toLowerCase())
+          return getRegularAnubandh(bill).toLowerCase().includes(registrationNumber.toLowerCase())
         } else {
           return bill.supplier.gstNumber?.toLowerCase().includes(registrationNumber.toLowerCase())
         }
@@ -325,7 +332,7 @@ export default function PurchaseListPage() {
     }
 
     return filtered
-  }, [purchaseBills, billNumber, partyName, partyAddress, dateFrom, dateTo, weight, rate, registrationNumber, payable, purchaseType])
+  })()
 
   const clearFilters = () => {
     setBillNumber('')
@@ -359,22 +366,37 @@ export default function PurchaseListPage() {
 
   const handleView = (bill: PurchaseBill) => {
     if (bill.type === 'regular') {
-      router.push(`/purchase/view?billId=${bill.id}`)
+      const path = companyId
+        ? `/purchase/view?billId=${bill.id}&companyId=${encodeURIComponent(companyId)}`
+        : `/purchase/view?billId=${bill.id}`
+      router.push(path)
     } else {
-      router.push(`/purchase/special-view?billId=${bill.id}`)
+      const path = companyId
+        ? `/purchase/special-view?billId=${bill.id}&companyId=${encodeURIComponent(companyId)}`
+        : `/purchase/special-view?billId=${bill.id}`
+      router.push(path)
     }
   }
 
   const handleEdit = (bill: PurchaseBill) => {
     if (bill.type === 'regular') {
-      router.push(`/purchase/edit?billId=${bill.id}`)
+      const path = companyId
+        ? `/purchase/edit?billId=${bill.id}&companyId=${encodeURIComponent(companyId)}`
+        : `/purchase/edit?billId=${bill.id}`
+      router.push(path)
     } else {
-      router.push(`/purchase/special-edit?billId=${bill.id}`)
+      const path = companyId
+        ? `/purchase/special-edit?billId=${bill.id}&companyId=${encodeURIComponent(companyId)}`
+        : `/purchase/special-edit?billId=${bill.id}`
+      router.push(path)
     }
   }
 
   const handlePayment = (bill: PurchaseBill) => {
-    router.push(`/payment/purchase/entry?billId=${bill.id}`)
+    const path = companyId
+      ? `/payment/purchase/entry?billId=${bill.id}&companyId=${encodeURIComponent(companyId)}`
+      : `/payment/purchase/entry?billId=${bill.id}`
+    router.push(path)
   }
 
   const handleDelete = (bill: PurchaseBill) => {
@@ -443,6 +465,18 @@ export default function PurchaseListPage() {
     return bill.specialPurchaseItems.length > 0 ? Number(bill.specialPurchaseItems[0].rate || 0) : 0
   }
 
+  const getRegularFarmerName = (bill: RegularPurchaseBill) => {
+    return String(bill.farmerNameSnapshot || bill.farmer?.name || 'Unknown Farmer')
+  }
+
+  const getRegularFarmerAddress = (bill: RegularPurchaseBill) => {
+    return String(bill.farmerAddressSnapshot || bill.farmer?.address || '')
+  }
+
+  const getRegularAnubandh = (bill: RegularPurchaseBill) => {
+    return String(bill.krashakAnubandhSnapshot || bill.farmer?.krashakAnubandhNumber || '')
+  }
+
   const csvEscape = (value: string | number) => {
     const str = String(value ?? '')
     if (str.includes(',') || str.includes('"') || str.includes('\n')) {
@@ -476,7 +510,7 @@ export default function PurchaseListPage() {
         'Date',
         'Party Name',
         'Party Address',
-        'Registration Number',
+        'Krashak Anubandh Number / GST',
         'Weight (Qt)',
         'Rate',
         'Payable',
@@ -488,9 +522,9 @@ export default function PurchaseListPage() {
         bill.type === 'regular' ? 'Farmer' : 'Supplier',
         bill.type === 'regular' ? bill.billNo : bill.supplierInvoiceNo,
         new Date(bill.billDate).toLocaleDateString(),
-        bill.type === 'regular' ? bill.farmer.name : bill.supplier.name,
-        bill.type === 'regular' ? bill.farmer.address : bill.supplier.address,
-        bill.type === 'regular' ? bill.farmer.krashakAnubandhNumber : bill.supplier.gstNumber,
+        bill.type === 'regular' ? getRegularFarmerName(bill) : bill.supplier.name,
+        bill.type === 'regular' ? getRegularFarmerAddress(bill) : bill.supplier.address,
+        bill.type === 'regular' ? getRegularAnubandh(bill) : bill.supplier.gstNumber,
         getBillWeightQt(bill).toFixed(2),
         getBillRate(bill).toFixed(2),
         Number(bill.totalAmount || 0).toFixed(2),
@@ -517,7 +551,7 @@ export default function PurchaseListPage() {
     const bodyRows = filteredBills
       .map((bill) => {
         const billNo = bill.type === 'regular' ? bill.billNo : bill.supplierInvoiceNo
-        const partyName = bill.type === 'regular' ? bill.farmer.name : bill.supplier.name
+        const partyName = bill.type === 'regular' ? getRegularFarmerName(bill) : bill.supplier.name
         return `<tr>
           <td>${bill.type === 'regular' ? 'Farmer' : 'Supplier'}</td>
           <td>${billNo}</td>
@@ -564,18 +598,11 @@ export default function PurchaseListPage() {
   }
 
   const totalBills = filteredBills.length
-  const totalAmount = useMemo(() => filteredBills.reduce((sum, bill) => sum + bill.totalAmount, 0), [filteredBills])
-  const regularBillsCount = useMemo(
-    () => filteredBills.filter((bill) => bill.type === 'regular').length,
-    [filteredBills]
-  )
-  const specialBillsCount = useMemo(
-    () => filteredBills.filter((bill) => bill.type === 'special').length,
-    [filteredBills]
-  )
-
-  const totalWeightQt = useMemo(() => filteredBills.reduce((sum, bill) => sum + getBillWeightQt(bill), 0), [filteredBills])
-  const totalWeightKg = useMemo(() => totalWeightQt * 100, [totalWeightQt])
+  const totalAmount = filteredBills.reduce((sum, bill) => sum + bill.totalAmount, 0)
+  const regularBillsCount = filteredBills.filter((bill) => bill.type === 'regular').length
+  const specialBillsCount = filteredBills.filter((bill) => bill.type === 'special').length
+  const totalWeightQt = filteredBills.reduce((sum, bill) => sum + getBillWeightQt(bill), 0)
+  const totalWeightKg = totalWeightQt * 100
 
   if (loading) {
     return (
@@ -728,7 +755,7 @@ export default function PurchaseListPage() {
                     <TableHead>Date</TableHead>
                     <TableHead>Party Name</TableHead>
                     <TableHead>Party Address</TableHead>
-                    <TableHead>Registration Number</TableHead>
+                    <TableHead>Krashak Anubandh Number / GST</TableHead>
                     <TableHead>Weight</TableHead>
                     <TableHead>Rate</TableHead>
                     <TableHead>Payable</TableHead>
@@ -751,14 +778,14 @@ export default function PurchaseListPage() {
                       </TableCell>
                       <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>
                       <TableCell>
-                        {bill.type === 'regular' ? bill.farmer.name : bill.supplier.name}
+                        {bill.type === 'regular' ? getRegularFarmerName(bill) : bill.supplier.name}
                       </TableCell>
                       <TableCell>
-                        {bill.type === 'regular' ? bill.farmer.address : bill.supplier.address}
+                        {bill.type === 'regular' ? getRegularFarmerAddress(bill) : bill.supplier.address}
                       </TableCell>
                       <TableCell>
                         {bill.type === 'regular' 
-                          ? bill.farmer.krashakAnubandhNumber 
+                          ? getRegularAnubandh(bill) 
                           : bill.supplier.gstNumber
                         }
                       </TableCell>

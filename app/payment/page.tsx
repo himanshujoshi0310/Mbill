@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useCallback, Suspense } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import DashboardLayout from '@/app/components/DashboardLayout'
-import { CreditCard, Plus, Eye, TrendingUp, TrendingDown, DollarSign } from 'lucide-react'
+import { Plus, Eye } from 'lucide-react'
 import { isAbortError } from '@/lib/http'
 import { resolveCompanyId, stripCompanyParamsFromUrl } from '@/lib/company-context'
 
@@ -69,6 +69,16 @@ const clampNonNegative = (value: number): number => {
   return Math.max(0, parsed)
 }
 
+const parseApiJson = async <T,>(response: Response, fallback: T): Promise<T> => {
+  const raw = await response.text()
+  if (!raw) return fallback
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
+}
+
 export default function PaymentPage() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
@@ -88,50 +98,11 @@ function PaymentPageContent() {
   const [payments, setPayments] = useState<Payment[]>([])
 
   // Filter states
-  const [filterBillType, setFilterBillType] = useState('')
+  const [filterBillType, setFilterBillType] = useState('all')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
-  const parseApiJson = async <T,>(response: Response, fallback: T): Promise<T> => {
-    const raw = await response.text()
-    if (!raw) return fallback
-    try {
-      return JSON.parse(raw) as T
-    } catch {
-      return fallback
-    }
-  }
-
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      const resolvedCompanyId = await resolveCompanyId(window.location.search)
-      if (cancelled) return
-      if (!resolvedCompanyId) {
-        setLoading(false)
-        router.push('/company/select')
-        return
-      }
-      setCompanyId(resolvedCompanyId)
-      stripCompanyParamsFromUrl()
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [router])
-
-  useEffect(() => {
-    if (!companyId) return
-    let cancelled = false
-    ;(async () => {
-      await fetchPaymentData(() => cancelled)
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [companyId])
-
-  const fetchPaymentData = async (isCancelled: () => boolean = () => false) => {
+  const fetchPaymentData = useCallback(async (isCancelled: () => boolean = () => false) => {
     try {
       if (isCancelled()) return
       setLoading(true)
@@ -195,7 +166,36 @@ function PaymentPageContent() {
       setPayments([])
       setLoading(false)
     }
-  }
+  }, [companyId])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const resolvedCompanyId = await resolveCompanyId(window.location.search)
+      if (cancelled) return
+      if (!resolvedCompanyId) {
+        setLoading(false)
+        router.push('/company/select')
+        return
+      }
+      setCompanyId(resolvedCompanyId)
+      stripCompanyParamsFromUrl()
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [router])
+
+  useEffect(() => {
+    if (!companyId) return
+    let cancelled = false
+    ;(async () => {
+      await fetchPaymentData(() => cancelled)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [companyId, fetchPaymentData])
 
   const getPurchasePartyName = (bill: PurchaseBill) => {
     return bill.supplier?.name || bill.farmer?.name || 'Unknown'
@@ -204,7 +204,7 @@ function PaymentPageContent() {
   const getFilteredPayments = () => {
     let filtered = payments
 
-    if (filterBillType) {
+    if (filterBillType && filterBillType !== 'all') {
       filtered = filtered.filter(payment => payment.billType === filterBillType)
     }
 
@@ -218,20 +218,6 @@ function PaymentPageContent() {
 
     return filtered.sort((a, b) => new Date(b.payDate).getTime() - new Date(a.payDate).getTime())
   }
-
-  const getPurchaseStats = () => ({
-    total: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.totalAmount), 0),
-    paid: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.paidAmount), 0),
-    pending: purchaseBills.reduce((sum, bill) => sum + clampNonNegative(bill.balanceAmount), 0),
-    count: purchaseBills.length
-  })
-
-  const getSalesStats = () => ({
-    total: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.totalAmount), 0),
-    received: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.receivedAmount), 0),
-    pending: salesBills.reduce((sum, bill) => sum + clampNonNegative(bill.balanceAmount), 0),
-    count: salesBills.length
-  })
 
   const getPaymentStats = () => ({
     totalPayments: payments.reduce((sum, payment) => sum + clampNonNegative(payment.amount), 0),
@@ -360,7 +346,9 @@ function PaymentPageContent() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {(activeTab === 'purchase' ? purchaseBills : salesBills).map((bill) => (
+                    {(activeTab === 'purchase' ? purchaseBills : salesBills)
+                      .filter((bill) => clampNonNegative(bill.balanceAmount) > 0)
+                      .map((bill) => (
                       <TableRow key={bill.id}>
                         <TableCell>{bill.billNo}</TableCell>
                         <TableCell>{new Date(bill.billDate).toLocaleDateString()}</TableCell>

@@ -218,7 +218,9 @@ export async function POST(request: NextRequest) {
     const parsedRate = parseRequiredNonNegative(rate, 'Rate')
     if (parsedRate instanceof NextResponse) return parsedRate
 
-    const parsedPayable = parseRequiredNonNegative(payableAmount, 'Payable amount')
+    const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
+    const fallbackPayable = Math.max(0, (parsedWeight * parsedRate) - parsedHammali)
+    const parsedPayable = parseRequiredNonNegative(payableAmount ?? fallbackPayable, 'Payable amount')
     if (parsedPayable instanceof NextResponse) return parsedPayable
 
     const parsedPaid = parseNonNegativeNumber(paidAmount) ?? 0
@@ -227,7 +229,6 @@ export async function POST(request: NextRequest) {
     }
 
     const parsedBalance = Math.max(0, parsedPayable - parsedPaid)
-    const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
     const parsedKgEquivalent = parseNonNegativeNumber(kgEquivalent)
     const parsedTotalWeightQt = parseNonNegativeNumber(totalWeightQt) ?? parsedWeight
 
@@ -576,7 +577,9 @@ export async function PUT(request: NextRequest) {
     const parsedRate = parseRequiredNonNegative(rate, 'Rate')
     if (parsedRate instanceof NextResponse) return parsedRate
 
-    const parsedPayable = parseRequiredNonNegative(payableAmount, 'Payable amount')
+    const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
+    const fallbackPayable = Math.max(0, (parsedWeight * parsedRate) - parsedHammali)
+    const parsedPayable = parseRequiredNonNegative(payableAmount ?? fallbackPayable, 'Payable amount')
     if (parsedPayable instanceof NextResponse) return parsedPayable
 
     const parsedPaid = parseNonNegativeNumber(paidAmount) ?? 0
@@ -585,7 +588,6 @@ export async function PUT(request: NextRequest) {
     }
 
     const parsedBalance = Math.max(0, parsedPayable - parsedPaid)
-    const parsedHammali = parseNonNegativeNumber(hammali) ?? 0
     const parsedKgEquivalent = parseNonNegativeNumber(kgEquivalent)
     const parsedTotalWeightQt = parseNonNegativeNumber(totalWeightQt) ?? parsedWeight
 

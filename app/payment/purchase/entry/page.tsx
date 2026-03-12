@@ -394,6 +394,15 @@ function PurchasePaymentEntryPageContent() {
   }, [partyGroups, selectedPartyKey])
 
   useEffect(() => {
+    if (selectedPartyKey || partyGroups.length === 0) return
+    const firstGroup = partyGroups[0]
+    if (!firstGroup) return
+    setSelectedPartyKey(firstGroup.partyKey)
+    setSelectedPartyName(firstGroup.partyName)
+    setSelectedBillId(firstGroup.bills[0]?.id || '')
+  }, [partyGroups, selectedPartyKey])
+
+  useEffect(() => {
     if (!billIdFromQuery || hasAppliedBillQuery || pendingBills.length === 0) return
 
     const targetBill = pendingBills.find((bill) => bill.id === billIdFromQuery)

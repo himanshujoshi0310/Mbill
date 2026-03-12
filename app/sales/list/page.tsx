@@ -30,11 +30,19 @@ interface SalesBill {
   salesItems: Array<{
     weight?: number
     qty?: number
+    bags?: number
     rate?: number
     amount?: number
     product?: {
       name: string
     }
+  }>
+  transportBills: Array<{
+    transportName?: string
+    lorryNo?: string
+    freightAmount?: number
+    otherAmount?: number
+    insuranceAmount?: number
   }>
 }
 
@@ -62,9 +70,19 @@ function normalizeSalesBill(raw: any): SalesBill {
       ? raw.salesItems.map((item: any) => ({
           weight: clampNonNegative(Number(item?.weight || item?.qty || 0)),
           qty: clampNonNegative(Number(item?.qty || item?.weight || 0)),
+          bags: clampNonNegative(Number(item?.bags || 0)),
           rate: clampNonNegative(Number(item?.rate || 0)),
           amount: clampNonNegative(Number(item?.amount || 0)),
           product: item?.product ? { name: String(item.product.name || '') } : undefined
+        }))
+      : [],
+    transportBills: Array.isArray(raw?.transportBills)
+      ? raw.transportBills.map((item: any) => ({
+          transportName: String(item?.transportName || ''),
+          lorryNo: String(item?.lorryNo || ''),
+          freightAmount: clampNonNegative(Number(item?.freightAmount || 0)),
+          otherAmount: clampNonNegative(Number(item?.otherAmount || 0)),
+          insuranceAmount: clampNonNegative(Number(item?.insuranceAmount || 0))
         }))
       : []
   }
@@ -106,6 +124,27 @@ function toDateInputValue(date: Date): string {
 function formatDateSafe(value: string): string {
   if (!isValidDateValue(value)) return '-'
   return new Date(value).toLocaleDateString()
+}
+
+function getBillTotalBags(bill: SalesBill): number {
+  return bill.salesItems.reduce((sum, item) => sum + Number(item.bags || 0), 0)
+}
+
+function getBillTotalWeight(bill: SalesBill): number {
+  return bill.salesItems.reduce((sum, item) => sum + Number(item.weight || item.qty || 0), 0)
+}
+
+function getBillAverageRate(bill: SalesBill): number {
+  const totalWeight = getBillTotalWeight(bill)
+  if (totalWeight <= 0) {
+    return bill.salesItems.length > 0 ? Number(bill.salesItems[0].rate || 0) : 0
+  }
+  const weighted = bill.salesItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  return weighted / totalWeight
+}
+
+function getPrimaryTransport(bill: SalesBill) {
+  return bill.transportBills[0] || null
 }
 
 export default function SalesListPage() {
@@ -216,15 +255,11 @@ export default function SalesListPage() {
     }
 
     if (weight) {
-      filtered = filtered.filter(bill =>
-        bill.salesItems.some(item => item.qty?.toString().includes(weight))
-      )
+      filtered = filtered.filter((bill) => getBillTotalWeight(bill).toString().includes(weight))
     }
 
     if (rate) {
-      filtered = filtered.filter(bill =>
-        bill.salesItems.some(item => item.rate?.toString().includes(rate))
-      )
+      filtered = filtered.filter((bill) => getBillAverageRate(bill).toString().includes(rate))
     }
 
     if (payable) {
@@ -264,11 +299,17 @@ export default function SalesListPage() {
   }
 
   const handleView = (billId: string) => {
-    router.push(`/sales/view?billId=${billId}`)
+    const viewPath = companyId
+      ? `/sales/view?billId=${billId}&companyId=${encodeURIComponent(companyId)}`
+      : `/sales/view?billId=${billId}`
+    router.push(viewPath)
   }
 
   const handleEdit = (billId: string) => {
-    router.push(`/sales/edit?billId=${billId}`)
+    const editPath = companyId
+      ? `/sales/entry?billId=${billId}&companyId=${encodeURIComponent(companyId)}`
+      : `/sales/entry?billId=${billId}`
+    router.push(editPath)
   }
 
   const handleDelete = (billId: string) => {
@@ -315,15 +356,141 @@ export default function SalesListPage() {
   }
 
   const handlePrint = (billId: string) => {
-    router.push(`/sales/${billId}/print?type=invoice`)
+    const printPath = companyId
+      ? `/sales/${billId}/print?type=invoice&companyId=${encodeURIComponent(companyId)}`
+      : `/sales/${billId}/print?type=invoice`
+    router.push(printPath)
+  }
+
+  const csvEscape = (value: string | number) => {
+    const str = String(value ?? '')
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
+  const downloadTextFile = (name: string, content: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   }
 
   const exportToExcel = () => {
-    // TODO: Implement Excel export
+    if (filteredBills.length === 0) {
+      alert('No sales bills to export')
+      return
+    }
+
+    const rows = [
+      [
+        'Invoice No',
+        'Date',
+        'Party',
+        'No. of Bags',
+        'Total Weight (Qt)',
+        'Avg Rate',
+        'Other Amount',
+        'Insurance Amount',
+        'Transport Name',
+        'Lorry No',
+        'Payable',
+        'Received',
+        'Balance',
+        'Status'
+      ],
+      ...filteredBills.map((bill) => {
+        const transport = getPrimaryTransport(bill)
+        return [
+          bill.invoiceNo,
+          formatDateSafe(bill.invoiceDate),
+          bill.party.name,
+          getBillTotalBags(bill).toFixed(2),
+          getBillTotalWeight(bill).toFixed(2),
+          getBillAverageRate(bill).toFixed(2),
+          Number(transport?.otherAmount || 0).toFixed(2),
+          Number(transport?.insuranceAmount || 0).toFixed(2),
+          transport?.transportName || '-',
+          transport?.lorryNo || '-',
+          Number(bill.totalAmount || 0).toFixed(2),
+          Number(bill.receivedAmount || 0).toFixed(2),
+          Number(bill.balanceAmount || 0).toFixed(2),
+          bill.status
+        ]
+      })
+    ]
+
+    const csv = rows.map((row) => row.map(csvEscape).join(',')).join('\n')
+    downloadTextFile(`sales-list-${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv;charset=utf-8;')
   }
 
   const exportToPdf = () => {
-    // TODO: Implement PDF export
+    if (filteredBills.length === 0) {
+      alert('No sales bills to export')
+      return
+    }
+    const popup = window.open('', '_blank', 'width=1300,height=900')
+    if (!popup) {
+      alert('Please allow popups to export PDF')
+      return
+    }
+
+    const bodyRows = filteredBills
+      .map((bill) => {
+        const transport = getPrimaryTransport(bill)
+        return `<tr>
+          <td>${bill.invoiceNo}</td>
+          <td>${formatDateSafe(bill.invoiceDate)}</td>
+          <td>${bill.party.name}</td>
+          <td style=\"text-align:right\">${getBillTotalBags(bill).toFixed(2)}</td>
+          <td style=\"text-align:right\">${getBillTotalWeight(bill).toFixed(2)}</td>
+          <td style=\"text-align:right\">${getBillAverageRate(bill).toFixed(2)}</td>
+          <td style=\"text-align:right\">${Number(transport?.otherAmount || 0).toFixed(2)}</td>
+          <td style=\"text-align:right\">${Number(transport?.insuranceAmount || 0).toFixed(2)}</td>
+          <td>${transport?.transportName || '-'}</td>
+          <td>${transport?.lorryNo || '-'}</td>
+          <td style=\"text-align:right\">₹${Number(bill.totalAmount || 0).toFixed(2)}</td>
+          <td style=\"text-align:right\">₹${Number(bill.receivedAmount || 0).toFixed(2)}</td>
+          <td style=\"text-align:right\">₹${Number(bill.balanceAmount || 0).toFixed(2)}</td>
+          <td>${bill.status}</td>
+        </tr>`
+      })
+      .join('')
+
+    popup.document.write(`<!doctype html>
+<html>
+  <head>
+    <title>Sales List</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 16px; }
+      h1 { margin: 0 0 12px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th, td { border: 1px solid #d1d5db; padding: 6px; }
+      th { background: #f3f4f6; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <h1>Sales List</h1>
+    <p>Generated: ${new Date().toLocaleString()}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Invoice</th><th>Date</th><th>Party</th><th>Bags</th><th>Weight</th><th>Rate</th><th>Other</th><th>Insurance</th><th>Transport</th><th>Lorry</th><th>Payable</th><th>Received</th><th>Balance</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  </body>
+</html>`)
+    popup.document.close()
+    popup.focus()
+    popup.print()
   }
 
   const totalBills = filteredBills.length
@@ -468,8 +635,12 @@ export default function SalesListPage() {
                     <TableHead>Party Name</TableHead>
                     <TableHead>Party Address</TableHead>
                     <TableHead>Party Contact</TableHead>
-                    <TableHead>Weight</TableHead>
+                    <TableHead>No. of Bags</TableHead>
+                    <TableHead>Total Weight</TableHead>
                     <TableHead>Rate</TableHead>
+                    <TableHead>Other Amt</TableHead>
+                    <TableHead>Insurance Amt</TableHead>
+                    <TableHead>Transport</TableHead>
                     <TableHead>Payable</TableHead>
                     <TableHead>Received</TableHead>
                     <TableHead>Balance</TableHead>
@@ -485,11 +656,15 @@ export default function SalesListPage() {
                       <TableCell>{bill.party.name}</TableCell>
                       <TableCell>{bill.party.address}</TableCell>
                       <TableCell>{bill.party.phone1}</TableCell>
+                      <TableCell>{getBillTotalBags(bill).toFixed(2)}</TableCell>
+                      <TableCell>{getBillTotalWeight(bill).toFixed(2)}</TableCell>
+                      <TableCell>{getBillAverageRate(bill).toFixed(2)}</TableCell>
+                      <TableCell>₹{Number(getPrimaryTransport(bill)?.otherAmount || 0).toFixed(2)}</TableCell>
+                      <TableCell>₹{Number(getPrimaryTransport(bill)?.insuranceAmount || 0).toFixed(2)}</TableCell>
                       <TableCell>
-                        {bill.salesItems.reduce((sum, item) => sum + (item.weight || item.qty || 0), 0)}
-                      </TableCell>
-                      <TableCell>
-                        {bill.salesItems.length > 0 ? (bill.salesItems[0].rate || 0) : 0}
+                        {getPrimaryTransport(bill)
+                          ? `${getPrimaryTransport(bill)?.transportName || '-'} / ${getPrimaryTransport(bill)?.lorryNo || '-'}`
+                          : '-'}
                       </TableCell>
                       <TableCell>₹{(bill.totalAmount || 0).toFixed(2)}</TableCell>
                       <TableCell>₹{(bill.receivedAmount || 0).toFixed(2)}</TableCell>

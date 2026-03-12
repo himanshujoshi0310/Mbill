@@ -180,7 +180,7 @@ export default function PaymentDashboardPage() {
 
       const paymentsRaw = await paymentsResponse.json().catch(() => [])
       const paymentsData = Array.isArray(paymentsRaw) ? paymentsRaw : []
-      const normalizedPayments = paymentsData.map((payment: Payment) => ({
+      const normalizedPayments: Payment[] = paymentsData.map((payment: Payment) => ({
         ...payment,
         amount: clampNonNegative(payment.amount),
         status: payment.status === 'pending' ? 'pending' : 'paid'
@@ -220,8 +220,11 @@ export default function PaymentDashboardPage() {
   }
 
   const handleEditBill = (billId: string, billType: 'purchase' | 'sales' = activeTab) => {
-    const route = billType === 'purchase' ? '/purchase/edit' : '/sales/edit'
-    router.push(`${route}?billId=${billId}`)
+    const route = billType === 'purchase' ? '/purchase/edit' : '/sales/entry'
+    const query = companyId
+      ? `billId=${billId}&companyId=${encodeURIComponent(companyId)}`
+      : `billId=${billId}`
+    router.push(`${route}?${query}`)
   }
 
   const openPaymentEditor = (payment: Payment) => {

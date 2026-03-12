@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,6 +22,9 @@ interface Party {
 
 interface SalesItem {
   id: string
+  salesItemId: string
+  salesItemName: string
+  productName: string
   productId: string
   weight: number
   bags: number
@@ -39,12 +42,48 @@ interface SalesItemMasterOption {
   }
 }
 
+interface ExistingSalesBill {
+  id: string
+  billNo: string
+  billDate: string
+  partyId: string
+  party?: {
+    id: string
+    name: string
+    address: string
+    phone1: string
+  }
+  salesItems?: Array<{
+    id: string
+    productId: string
+    product?: {
+      name?: string
+    }
+    bags?: number | null
+    weight?: number
+    rate?: number
+    amount?: number
+  }>
+  transportBills?: Array<{
+    transportName?: string | null
+    lorryNo?: string | null
+    freightPerQt?: number | null
+    freightAmount?: number | null
+    advance?: number | null
+    toPay?: number | null
+    otherAmount?: number | null
+    insuranceAmount?: number | null
+  }>
+}
+
 export default function SalesEntryPage() {
   const router = useRouter()
   const itemIdSequence = useRef(0)
   const [companyId, setCompanyId] = useState('')
+  const [editBillId, setEditBillId] = useState('')
   const [parties, setParties] = useState<Party[]>([])
   const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
 
   // Transport search state
   const [transportSearchTerm, setTransportSearchTerm] = useState('')
@@ -55,6 +94,8 @@ export default function SalesEntryPage() {
   // Sales Items state
   const [salesItems, setSalesItems] = useState<SalesItemMasterOption[]>([])
   const [currentFormItems, setCurrentFormItems] = useState<SalesItem[]>([])
+  const [partySearchTerm, setPartySearchTerm] = useState('')
+  const [salesItemSearchTerm, setSalesItemSearchTerm] = useState('')
 
   // Invoice Tab 1 - Basic Info
   const [invoiceNo, setInvoiceNo] = useState('')
@@ -113,6 +154,27 @@ export default function SalesEntryPage() {
       return fallback
     }
   }
+
+  const isEditMode = editBillId !== ''
+
+  const filteredParties = useMemo(() => {
+    const query = partySearchTerm.trim().toLowerCase()
+    if (!query) return parties
+    return parties.filter((party) => {
+      if (party.id === selectedParty) return true
+      return String(party.name || '').toLowerCase().includes(query)
+    })
+  }, [parties, partySearchTerm, selectedParty])
+
+  const filteredSalesItems = useMemo(() => {
+    const query = salesItemSearchTerm.trim().toLowerCase()
+    if (!query) return salesItems
+    return salesItems.filter((salesItem) => {
+      if (salesItem.id === currentItem.salesItemId) return true
+      const label = `${salesItem.salesItemName || ''} ${salesItem.product?.name || ''}`.toLowerCase()
+      return label.includes(query)
+    })
+  }, [salesItems, salesItemSearchTerm, currentItem.salesItemId])
 
   useEffect(() => {
     void fetchData()
@@ -187,6 +249,7 @@ export default function SalesEntryPage() {
       setPartyName(party.name) // For display only
       setPartyAddress(party.address || '')
       setPartyContact(party.phone1 || '')
+      setPartySearchTerm(party.name || '')
     } else {
       setPartyName('')
       setPartyAddress('')
@@ -233,6 +296,10 @@ export default function SalesEntryPage() {
         }
         setParties((prev) => [...prev, newParty])
         setSelectedParty(newParty.id)
+        setPartyName(newParty.name || '')
+        setPartyAddress(newParty.address || '')
+        setPartyContact(newParty.phone1 || '')
+        setPartySearchTerm(newParty.name || '')
         alert('Party added successfully!')
       } else {
         const error = await parseApiJson<{ error?: string }>(response, {}, 'Add party API error')
@@ -250,7 +317,7 @@ export default function SalesEntryPage() {
   }
 
   const handleTransportSelect = (transport: any) => {
-    setTransportName(transport.id)
+    setTransportName(transport.transporterName || '')
     setTransportSearchTerm(transport.transporterName || '')
     setLorryNo(transport.vehicleNumber || '')
     setShowTransportDropdown(false)
@@ -258,6 +325,57 @@ export default function SalesEntryPage() {
 
   const handleAddNewTransport = () => {
     router.push('/master/transport')
+  }
+
+  const populateFromExistingBill = (bill: ExistingSalesBill, allSalesItems: SalesItemMasterOption[]) => {
+    setEditBillId(bill.id)
+    setInvoiceNo(String(bill.billNo || ''))
+    {
+      const parsedDate = new Date(bill.billDate)
+      const safeDate = Number.isFinite(parsedDate.getTime()) ? parsedDate.toISOString().split('T')[0] : new Date().toISOString().split('T')[0]
+      setInvoiceDate(safeDate)
+    }
+
+    const partyId = String(bill.partyId || bill.party?.id || '')
+    setSelectedParty(partyId)
+    setPartyName(String(bill.party?.name || ''))
+    setPartyAddress(String(bill.party?.address || ''))
+    setPartyContact(String(bill.party?.phone1 || ''))
+    setPartySearchTerm(String(bill.party?.name || ''))
+
+    const firstTransport = Array.isArray(bill.transportBills) ? bill.transportBills[0] : undefined
+    const transportLabel = String(firstTransport?.transportName || '')
+    setTransportName(transportLabel)
+    setTransportSearchTerm(transportLabel)
+    setLorryNo(String(firstTransport?.lorryNo || ''))
+    setFreightPerQt(String(Math.max(0, Number(firstTransport?.freightPerQt || 0))))
+    setFreightAmount(String(Math.max(0, Number(firstTransport?.freightAmount || 0))))
+    setAdvance(String(Math.max(0, Number(firstTransport?.advance || 0))))
+    setToPay(String(Math.max(0, Number(firstTransport?.toPay || 0))))
+    setAdvanceExpense(String(Math.max(0, Number(firstTransport?.otherAmount || 0))))
+    setInsurance(String(Math.max(0, Number(firstTransport?.insuranceAmount || 0))))
+
+    const mappedItems: SalesItem[] = Array.isArray(bill.salesItems)
+      ? bill.salesItems.map((item, index) => {
+          const mappedMaster = allSalesItems.find((entry) => entry.productId === item.productId)
+          return {
+            id: String(item.id || `existing-${index + 1}`),
+            salesItemId: String(mappedMaster?.id || ''),
+            salesItemName: String(mappedMaster?.salesItemName || item.product?.name || ''),
+            productName: String(item.product?.name || mappedMaster?.product?.name || ''),
+            productId: String(item.productId || ''),
+            weight: Math.max(0, Number(item.weight || 0)),
+            bags: Math.max(0, Number(item.bags || 0)),
+            rate: Math.max(0, Number(item.rate || 0)),
+            amount: Math.max(0, Number(item.amount || 0)),
+            discount: 0
+          }
+        })
+      : []
+
+    itemIdSequence.current = mappedItems.length
+    setCurrentFormItems(mappedItems)
+    updateTotals(mappedItems)
   }
 
   const fetchData = async () => {
@@ -270,9 +388,12 @@ export default function SalesEntryPage() {
         return
       }
       setCompanyId(resolvedCompanyId)
-      stripCompanyParamsFromUrl()
 
-      // Fetch parties, transports, and sales items
+      const billIdFromQuery = new URLSearchParams(window.location.search).get('billId')?.trim() || ''
+      if (!billIdFromQuery) {
+        stripCompanyParamsFromUrl()
+      }
+
       const [partiesRes, transportsRes, salesItemsRes] = await Promise.all([
         fetch(`/api/parties?companyId=${resolvedCompanyId}`),
         fetch(`/api/transports?companyId=${resolvedCompanyId}`),
@@ -291,12 +412,34 @@ export default function SalesEntryPage() {
         parseApiJson<any[]>(salesItemsRes, [], 'Sales item masters API')
       ])
 
-      setParties(Array.isArray(partiesData) ? partiesData : [])
-      setTransports(Array.isArray(transportsData) ? transportsData : [])
-      setFilteredTransports(Array.isArray(transportsData) ? transportsData : [])
-      setSalesItems(Array.isArray(salesItemsData) ? salesItemsData : [])
+      const nextParties = Array.isArray(partiesData) ? partiesData : []
+      const nextTransports = Array.isArray(transportsData) ? transportsData : []
+      const nextSalesItems = Array.isArray(salesItemsData) ? salesItemsData : []
 
-      // Generate next invoice number
+      setParties(nextParties)
+      setTransports(nextTransports)
+      setFilteredTransports(nextTransports)
+      setSalesItems(nextSalesItems)
+
+      if (billIdFromQuery) {
+        const existingRes = await fetch(`/api/sales-bills?companyId=${resolvedCompanyId}&billId=${billIdFromQuery}`)
+        if (!existingRes.ok) {
+          alert('Sales bill not found for editing.')
+          router.push('/sales/list')
+          return
+        }
+        const existingBill = await parseApiJson<ExistingSalesBill | null>(existingRes, null, 'Sales bill by id API')
+        if (!existingBill?.id) {
+          alert('Sales bill not found for editing.')
+          router.push('/sales/list')
+          return
+        }
+
+        populateFromExistingBill(existingBill, nextSalesItems)
+        setLoading(false)
+        return
+      }
+
       const billsRes = await fetch(`/api/sales-bills?companyId=${resolvedCompanyId}&last=true`)
       if (!billsRes.ok) {
         setInvoiceNo('1')
@@ -307,7 +450,7 @@ export default function SalesEntryPage() {
       const lastBillNum = Number(billsData.lastBillNumber || 0)
       const nextInvoiceNumber = lastBillNum <= 0 ? 1 : lastBillNum + 1
       setInvoiceNo(nextInvoiceNumber.toString())
-      
+
       setLoading(false)
     } catch (error) {
       console.error('Error fetching data:', error)
@@ -362,6 +505,9 @@ export default function SalesEntryPage() {
 
     const newItem: SalesItem = {
       id: `item-${++itemIdSequence.current}`,
+      salesItemId: salesItem?.id || '',
+      salesItemName: salesItem?.salesItemName || salesItem?.product?.name || '',
+      productName: salesItem?.product?.name || '',
       productId: salesItem?.productId || '',
       weight: totalWeight || 0,
       bags,
@@ -453,16 +599,12 @@ export default function SalesEntryPage() {
     }
     
     try {
-      const firmId = companyId
-
-      // Validate required fields
-      if (!firmId) {
-        alert('Firm ID is missing')
+      if (!companyId) {
+        alert('Company ID is missing')
         return
       }
 
-      // Prepare sales invoice items data
-      const salesInvoiceItems = currentFormItems.map(item => ({
+      const salesBillItems = currentFormItems.map(item => ({
         productId: item.productId,
         weight: item.weight,
         bags: item.bags,
@@ -472,36 +614,37 @@ export default function SalesEntryPage() {
 
       const finalTotalAmount = Math.max(0, grandTotal)
 
-      // Sales Bill data (core fields only)
-      const salesBillData = {
-        companyId: firmId,
-        billNo: invoiceNo,
-        billDate: invoiceDate, // Fixed: use billDate instead of invoiceDate
+      const requestData: Record<string, unknown> = {
+        companyId,
+        invoiceNo,
+        invoiceDate,
         partyId: selectedParty,
+        partyAddress,
+        partyContact,
+        salesItems: salesBillItems,
         totalAmount: finalTotalAmount,
-        receivedAmount: 0, // Default to 0, can be updated later
-        balanceAmount: finalTotalAmount, // Initially full amount is balance
-        status: 'unpaid' // Default status
+        transportBill: {
+          transportName,
+          lorryNo,
+          freightPerQt: Math.max(0, parseFloat(freightPerQt) || 0),
+          freightAmount: Math.max(0, parseFloat(freightAmount) || 0),
+          advance: Math.max(0, parseFloat(advance) || 0),
+          toPay: Math.max(0, parseFloat(toPay) || 0),
+          otherAmount: Math.max(0, parseFloat(advanceExpense) || 0),
+          insuranceAmount: Math.max(0, parseFloat(insurance) || 0)
+        }
       }
 
-      // Transport Bill data (separate)
-      const transportBillData = {
-        transportName,
-        lorryNo,
-        freightPerQt: Math.max(0, parseFloat(freightPerQt) || 0),
-        freightAmount: Math.max(0, parseFloat(freightAmount) || 0),
-        advance: Math.max(0, parseFloat(advance) || 0),
-        toPay: Math.max(0, parseFloat(toPay) || 0)
+      if (isEditMode) {
+        requestData.id = editBillId
+      } else {
+        requestData.status = 'unpaid'
       }
 
-      const requestData = {
-        salesBill: salesBillData,
-        transportBill: transportBillData,
-        salesItems: salesInvoiceItems
-      }
+      setSubmitting(true)
 
-      const response = await fetch('/api/sales-invoices', {
-        method: 'POST',
+      const response = await fetch('/api/sales-bills', {
+        method: isEditMode ? 'PUT' : 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -517,10 +660,13 @@ export default function SalesEntryPage() {
       }
 
       if (response.ok) {
-        const createdId = parsedResponse?.salesBillId || parsedResponse?.salesBill?.id
-        alert('Sales bill created successfully!')
-        if (createdId) {
-          router.push(`/sales/${createdId}/print?type=invoice`)
+        const resolvedId = parsedResponse?.salesBillId || parsedResponse?.salesBill?.id || editBillId
+        alert(isEditMode ? 'Sales bill updated successfully!' : 'Sales bill created successfully!')
+        if (resolvedId) {
+          const printPath = companyId
+            ? `/sales/${resolvedId}/print?type=invoice&companyId=${encodeURIComponent(companyId)}`
+            : `/sales/${resolvedId}/print?type=invoice`
+          router.push(printPath)
         } else {
           router.push('/sales/list')
         }
@@ -530,11 +676,13 @@ export default function SalesEntryPage() {
           parsedResponse?.message ||
           response.statusText ||
           'Unknown error'
-        alert(`Error creating sales bill: ${errorMessage}`)
+        alert(`Error saving sales bill: ${errorMessage}`)
       }
     } catch (error) {
       console.error('Error:', error)
-      alert('Error creating sales bill')
+      alert('Error saving sales bill')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -552,7 +700,7 @@ export default function SalesEntryPage() {
         <div className="max-w-6xl mx-auto">
           <Card>
             <CardHeader>
-              <CardTitle className="text-2xl font-bold">Sales Entry</CardTitle>
+              <CardTitle className="text-2xl font-bold">{isEditMode ? 'Edit Sales Bill' : 'Sales Entry'}</CardTitle>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit}>
@@ -590,13 +738,22 @@ export default function SalesEntryPage() {
                       </div>
                       <div className="lg:col-span-6">
                         <Label htmlFor="party">Party</Label>
-                        <div className="flex gap-2">
+                        <div className="space-y-2">
+                          <div className="relative">
+                            <Input
+                              value={partySearchTerm}
+                              onChange={(e) => setPartySearchTerm(e.target.value)}
+                              placeholder="Search party name..."
+                              className="pr-10"
+                            />
+                            <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                          </div>
                           <Select value={selectedParty} onValueChange={handlePartySelect}>
                             <SelectTrigger className="flex-1">
                               <SelectValue placeholder="Select Party" />
                             </SelectTrigger>
                             <SelectContent>
-                              {parties
+                              {filteredParties
                                 .filter((party, index, self) => !!party?.id && index === self.findIndex((p) => p.id === party.id))
                                 .map((party, index) => (
                                 <SelectItem key={`${party.id}-${index}`} value={party.id}>
@@ -784,6 +941,15 @@ export default function SalesEntryPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
                         <div className="lg:col-span-2">
                           <Label htmlFor="itemProduct">Sales Items</Label>
+                          <div className="relative mb-2">
+                            <Input
+                              value={salesItemSearchTerm}
+                              onChange={(e) => setSalesItemSearchTerm(e.target.value)}
+                              placeholder="Search sales item..."
+                              className="pr-10"
+                            />
+                            <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                          </div>
                           <Select value={currentItem.salesItemId} onValueChange={(value) => {
                             setCurrentItem({ ...currentItem, salesItemId: value })
                           }}>
@@ -791,8 +957,8 @@ export default function SalesEntryPage() {
                               <SelectValue placeholder="Select Sales Item" />
                             </SelectTrigger>
                             <SelectContent>
-                              {salesItems.length > 0 ? (
-                                salesItems.map((salesItem) => (
+                              {filteredSalesItems.length > 0 ? (
+                                filteredSalesItems.map((salesItem) => (
                                   <SelectItem key={salesItem.id} value={salesItem.id}>
                                     {salesItem.salesItemName} ({salesItem.product?.name || 'No product'})
                                   </SelectItem>
@@ -845,7 +1011,6 @@ export default function SalesEntryPage() {
                             value={currentItem.rate}
                             onChange={(e) => setCurrentItem({...currentItem, rate: toNonNegative(e.target.value)})}
                             placeholder="Enter rate"
-                            required
                           />
                         </div>
                         <div>
@@ -880,6 +1045,7 @@ export default function SalesEntryPage() {
                             <thead>
                               <tr className="border-b">
                                 <th className="text-left p-4">#</th>
+                                <th className="text-left p-2">Sales Item</th>
                                 <th className="text-right p-2">Bags</th>
                                 <th className="text-right p-2">Weight (Qt.)</th>
                                 <th className="text-right p-2">Rate / Qt</th>
@@ -891,6 +1057,7 @@ export default function SalesEntryPage() {
                               {currentFormItems.map((item, index) => (
                                 <tr key={item.id} className="border-b">
                                   <td className="p-2">{index + 1}</td>
+                                  <td className="p-2">{item.salesItemName || item.productName || '-'}</td>
                                   <td className="p-2 text-right">{item.bags || 0}</td>
                                   <td className="p-2 text-right">{(item.weight || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{(item.rate || 0).toFixed(2)}</td>
@@ -920,7 +1087,7 @@ export default function SalesEntryPage() {
                   <h3 className="text-lg font-semibold mb-2 pb-2 border-b">4. Additional Charges</h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div>
-                      <Label htmlFor="advanceExpense">Advance Expense</Label>
+                      <Label htmlFor="advanceExpense">Other Amount</Label>
                       <Input
                         id="advanceExpense"
                         type="number"
@@ -928,7 +1095,7 @@ export default function SalesEntryPage() {
                         step="0.01"
                         value={advanceExpense}
                         onChange={(e) => setAdvanceExpense(toNonNegative(e.target.value))}
-                        placeholder="Enter advance expense"
+                        placeholder="Enter other amount"
                       />
                     </div>
                     <div>
@@ -987,7 +1154,9 @@ export default function SalesEntryPage() {
                   <Button type="button" variant="outline" onClick={() => router.back()}>
                     Cancel
                   </Button>
-                  <Button type="submit">Save Sales Bill</Button>
+                  <Button type="submit" disabled={submitting}>
+                    {submitting ? 'Saving...' : isEditMode ? 'Update Sales Bill' : 'Save Sales Bill'}
+                  </Button>
                 </div>
               </form>
             </CardContent>

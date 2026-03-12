@@ -28,7 +28,9 @@ const salesInvoiceSchema = z.object({
     freightPerQt: z.coerce.number().nonnegative().optional(),
     freightAmount: z.coerce.number().nonnegative().optional(),
     advance: z.coerce.number().nonnegative().optional(),
-    toPay: z.coerce.number().nonnegative().optional()
+    toPay: z.coerce.number().nonnegative().optional(),
+    otherAmount: z.coerce.number().nonnegative().optional(),
+    insuranceAmount: z.coerce.number().nonnegative().optional()
   }).optional(),
   salesItems: z.array(salesItemSchema).min(1)
 })
@@ -36,7 +38,7 @@ const salesInvoiceSchema = z.object({
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const firmId = searchParams.get('firmId')
+    const firmId = searchParams.get('companyId') || searchParams.get('firmId')
 
     if (!firmId) {
       return NextResponse.json({ error: 'Firm ID is required' }, { status: 400 })
@@ -127,6 +129,18 @@ export async function POST(request: NextRequest) {
             amount: item.amount
           }
         })
+
+        await tx.stockLedger.create({
+          data: {
+            companyId,
+            entryDate: new Date(billDate),
+            productId: item.productId,
+            type: 'sales',
+            qtyOut: item.weight,
+            refTable: 'sales_bills',
+            refId: salesBillRecord.id
+          }
+        })
       }
 
       // Create transport bill if data provided
@@ -140,7 +154,9 @@ export async function POST(request: NextRequest) {
             freightPerQt: transportBill.freightPerQt ?? 0,
             freightAmount: transportBill.freightAmount ?? 0,
             advance: transportBill.advance ?? 0,
-            toPay: transportBill.toPay ?? 0
+            toPay: transportBill.toPay ?? 0,
+            otherAmount: transportBill.otherAmount ?? 0,
+            insuranceAmount: transportBill.insuranceAmount ?? 0
           }
         })
       }

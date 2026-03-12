@@ -433,7 +433,7 @@ export default function ReportDashboard({
           const billInRange = passesDateRange(bill.billDate, fromDate, toDate)
           if (!billInRange && paymentsInRange.length === 0) continue
 
-          const effectivePayments = paymentsInRange.length > 0 ? paymentsInRange : allPayments
+          const effectivePayments = paymentsInRange
 
           let cashAmount = 0
           let onlineAmount = 0
@@ -472,7 +472,9 @@ export default function ReportDashboard({
           else if (bankAmount > 0) modeBucket = 'bank'
           else if (onlineAmount > 0) modeBucket = 'online'
 
-          const status = String(bill.status || 'unpaid').toLowerCase()
+          const purchaseTotal = normalizeAmount(bill.totalAmount)
+          const purchasePaid = normalizeAmount(bill.paidAmount)
+          const status = purchaseTotal > 0 && purchasePaid >= purchaseTotal ? 'paid' : purchasePaid > 0 ? 'partial' : 'unpaid'
           const sellerIfsc = String(farmer.ifscCode || latestPayment?.ifscCode || '').trim().toUpperCase()
           const bankName =
             String(farmer.bankName || latestPayment?.bankNameSnapshot || '').trim() ||
@@ -528,7 +530,7 @@ export default function ReportDashboard({
           const billInRange = passesDateRange(bill.billDate, fromDate, toDate)
           if (!billInRange && paymentsInRange.length === 0) continue
 
-          const effectivePayments = paymentsInRange.length > 0 ? paymentsInRange : allPayments
+          const effectivePayments = paymentsInRange
 
           let cashAmount = 0
           let onlineAmount = 0
@@ -567,7 +569,9 @@ export default function ReportDashboard({
           else if (bankAmount > 0) modeBucket = 'bank'
           else if (onlineAmount > 0) modeBucket = 'online'
 
-          const status = String(bill.status || 'unpaid').toLowerCase()
+          const salesTotal = normalizeAmount(bill.totalAmount)
+          const salesReceived = normalizeAmount(bill.receivedAmount)
+          const status = salesTotal > 0 && salesReceived >= salesTotal ? 'paid' : salesReceived > 0 ? 'partial' : 'unpaid'
           const sellerIfsc = String(latestPayment?.ifscCode || '').trim().toUpperCase()
           const bankName =
             String(latestPayment?.bankNameSnapshot || '').trim() ||

@@ -111,7 +111,11 @@ function PurchaseViewPageContent() {
   }
 
   const handleEdit = () => {
-    router.push(`/purchase/edit?billId=${billId}`)
+    if (!billId) return
+    const editPath = companyId
+      ? `/purchase/edit?billId=${billId}&companyId=${encodeURIComponent(companyId)}`
+      : `/purchase/edit?billId=${billId}`
+    router.push(editPath)
   }
 
   const handleDelete = () => {

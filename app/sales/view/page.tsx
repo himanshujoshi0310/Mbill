@@ -27,10 +27,22 @@ interface SalesBill {
       id: string
       name: string
     }
+    bags?: number
     qty?: number
     weight?: number
     rate?: number
     amount?: number
+  }>
+  transportBills?: Array<{
+    id: string
+    transportName?: string | null
+    lorryNo?: string | null
+    freightPerQt?: number | null
+    freightAmount?: number | null
+    advance?: number | null
+    toPay?: number | null
+    otherAmount?: number | null
+    insuranceAmount?: number | null
   }>
   totalAmount: number
   receivedAmount: number
@@ -72,8 +84,22 @@ function normalizeSalesBill(raw: any): SalesBill {
           },
           qty: clampNonNegative(item?.qty ?? item?.weight ?? 0),
           weight: clampNonNegative(item?.weight ?? item?.qty ?? 0),
+          bags: clampNonNegative(item?.bags ?? 0),
           rate: clampNonNegative(item?.rate ?? 0),
           amount: clampNonNegative(item?.amount ?? 0)
+        }))
+      : [],
+    transportBills: Array.isArray(raw?.transportBills)
+      ? raw.transportBills.map((item: any) => ({
+          id: String(item?.id || ''),
+          transportName: item?.transportName || null,
+          lorryNo: item?.lorryNo || null,
+          freightPerQt: clampNonNegative(item?.freightPerQt),
+          freightAmount: clampNonNegative(item?.freightAmount),
+          advance: clampNonNegative(item?.advance),
+          toPay: clampNonNegative(item?.toPay),
+          otherAmount: clampNonNegative(item?.otherAmount),
+          insuranceAmount: clampNonNegative(item?.insuranceAmount)
         }))
       : [],
     totalAmount,
@@ -143,7 +169,11 @@ function SalesViewPageContent() {
   }
 
   const handleEdit = () => {
-    router.push(`/sales/edit?billId=${billId}`)
+    if (!billId) return
+    const editPath = companyId
+      ? `/sales/entry?billId=${billId}&companyId=${encodeURIComponent(companyId)}`
+      : `/sales/entry?billId=${billId}`
+    router.push(editPath)
   }
 
   const handleDelete = () => {
@@ -185,7 +215,10 @@ function SalesViewPageContent() {
 
   const handlePrint = () => {
     if (!billId) return
-    router.push(`/sales/${billId}/print?type=invoice`)
+    const printPath = companyId
+      ? `/sales/${billId}/print?type=invoice&companyId=${encodeURIComponent(companyId)}`
+      : `/sales/${billId}/print?type=invoice`
+    router.push(printPath)
   }
 
   const handleExportPDF = () => {
@@ -313,6 +346,7 @@ function SalesViewPageContent() {
                   <thead>
                     <tr className="border-b">
                       <th className="text-left p-2">Product</th>
+                      <th className="text-right p-2">Bags</th>
                       <th className="text-right p-2">Weight</th>
                       <th className="text-right p-2">Rate</th>
                       <th className="text-right p-2">Amount</th>
@@ -322,6 +356,7 @@ function SalesViewPageContent() {
                     {salesBill.salesItems.map((item) => (
                       <tr key={item.id} className="border-b">
                         <td className="p-2">{item.product.name}</td>
+                        <td className="text-right p-2">{clampNonNegative(item.bags).toFixed(2)}</td>
                         <td className="text-right p-2">{clampNonNegative(item.weight ?? item.qty ?? 0).toFixed(2)}</td>
                         <td className="text-right p-2">₹{clampNonNegative(item.rate).toFixed(2)}</td>
                         <td className="text-right p-2">₹{clampNonNegative(item.amount).toFixed(2)}</td>
@@ -330,6 +365,57 @@ function SalesViewPageContent() {
                   </tbody>
                 </table>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Transport & Additional Charges</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {salesBill.transportBills && salesBill.transportBills.length > 0 ? (
+                (() => {
+                  const transport = salesBill.transportBills?.[0]
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div>
+                        <p className="text-sm text-gray-600">Transport Name</p>
+                        <p className="font-semibold">{transport?.transportName || 'N/A'}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600">Lorry Number</p>
+                        <p className="font-semibold">{transport?.lorryNo || 'N/A'}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600">Freight Amount</p>
+                        <p className="font-semibold">₹{clampNonNegative(transport?.freightAmount).toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600">Freight / Qt</p>
+                        <p className="font-semibold">₹{clampNonNegative(transport?.freightPerQt).toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600">Other Amount</p>
+                        <p className="font-semibold">₹{clampNonNegative(transport?.otherAmount).toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600">Insurance Amount</p>
+                        <p className="font-semibold">₹{clampNonNegative(transport?.insuranceAmount).toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600">Advance</p>
+                        <p className="font-semibold">₹{clampNonNegative(transport?.advance).toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600">To Pay</p>
+                        <p className="font-semibold">₹{clampNonNegative(transport?.toPay).toFixed(2)}</p>
+                      </div>
+                    </div>
+                  )
+                })()
+              ) : (
+                <p className="text-sm text-gray-500">No transport details available for this bill.</p>
+              )}
             </CardContent>
           </Card>
 

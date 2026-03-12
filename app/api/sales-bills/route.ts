@@ -7,52 +7,46 @@ import { buildPaginationMeta, parsePaginationParams } from '@/lib/pagination'
 
 const salesItemSchema = z.object({
   productId: z.string().min(1),
-  weight: z.coerce.number().min(0).optional(),
-  bags: z.coerce.number().int().min(0).optional(),
-  rate: z.coerce.number().min(0).optional(),
-  amount: z.coerce.number().min(0).optional()
+  salesItemId: z.string().optional(),
+  totalWeight: z.coerce.number().nonnegative().optional(),
+  qty: z.coerce.number().nonnegative().optional(),
+  weight: z.coerce.number().nonnegative().optional(),
+  bags: z.coerce.number().int().nonnegative().optional(),
+  rate: z.coerce.number().nonnegative().optional(),
+  amount: z.coerce.number().nonnegative().optional()
+})
+
+const transportBillSchema = z.object({
+  transportName: z.string().optional().nullable(),
+  lorryNo: z.string().optional().nullable(),
+  freightPerQt: z.coerce.number().nonnegative().optional(),
+  freightAmount: z.coerce.number().nonnegative().optional(),
+  advance: z.coerce.number().nonnegative().optional(),
+  toPay: z.coerce.number().nonnegative().optional(),
+  otherAmount: z.coerce.number().nonnegative().optional(),
+  insuranceAmount: z.coerce.number().nonnegative().optional()
 })
 
 const salesCreateSchema = z.object({
   companyId: z.string().min(1),
   invoiceNo: z.string().optional(),
+  billNo: z.string().optional(),
   invoiceDate: z.string().optional(),
-  partyName: z.string().min(1),
-  partyAddress: z.string().optional(),
-  partyContact: z.string().optional(),
-  salesItems: z.array(salesItemSchema).min(1),
-  totalAmount: z.union([z.string(), z.number()]).optional()
-})
-
-const salesUpdateSchema = z.object({
-  id: z.string().optional(),
-  companyId: z.string().min(1),
-  invoiceNo: z.string().optional(),
-  invoiceDate: z.string().optional(),
+  billDate: z.string().optional(),
+  partyId: z.string().optional(),
   partyName: z.string().optional(),
   partyAddress: z.string().optional(),
   partyContact: z.string().optional(),
-  salesItems: z.array(z.object({
-    productId: z.string().min(1),
-    totalWeight: z.coerce.number().min(0).optional(),
-    qty: z.coerce.number().min(0).optional(),
-    bags: z.coerce.number().int().min(0).optional(),
-    weight: z.coerce.number().min(0).optional(),
-    rate: z.coerce.number().min(0).optional(),
-    amount: z.coerce.number().min(0).optional()
-  })).optional(),
-  transportBill: z.object({
-    transportName: z.string().optional().nullable(),
-    lorryNo: z.string().optional().nullable(),
-    freightPerQt: z.coerce.number().min(0).optional(),
-    freightAmount: z.coerce.number().min(0).optional(),
-    advance: z.coerce.number().min(0).optional(),
-    toPay: z.coerce.number().min(0).optional()
-  }).optional(),
+  salesItems: z.array(salesItemSchema).min(1),
+  transportBill: transportBillSchema.optional(),
   totalAmount: z.union([z.string(), z.number()]).optional(),
   receivedAmount: z.union([z.string(), z.number()]).optional(),
   balanceAmount: z.union([z.string(), z.number()]).optional(),
   status: z.string().optional()
+})
+
+const salesUpdateSchema = salesCreateSchema.extend({
+  id: z.string().optional()
 })
 
 function safeToDate(value?: string): Date {
@@ -79,17 +73,60 @@ function extractBillSequence(billNo: string): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function deriveStatus(balanceAmount: number, receivedAmount: number): 'paid' | 'partial' | 'unpaid' {
+  if (balanceAmount <= 0) return 'paid'
+  if (receivedAmount > 0) return 'partial'
+  return 'unpaid'
+}
+
+function normalizeBillNo(invoiceNo: unknown, billNo: unknown): string {
+  const fromInvoice = String(invoiceNo || '').trim()
+  if (fromInvoice) return fromInvoice
+  const fromBillNo = String(billNo || '').trim()
+  if (fromBillNo) return fromBillNo
+  return '1'
+}
+
+function normalizeSalesItems(items: Array<z.infer<typeof salesItemSchema>>) {
+  return items.map((item) => {
+    const weight = toNonNegativeNumber(item.weight ?? item.totalWeight ?? item.qty, 0)
+    const rate = toNonNegativeNumber(item.rate, 0)
+    const bags = item.bags !== undefined ? Math.floor(toNonNegativeNumber(item.bags, 0)) : null
+    const amount = item.amount !== undefined ? toNonNegativeNumber(item.amount, 0) : Number((weight * rate).toFixed(2))
+
+    return {
+      productId: item.productId,
+      weight,
+      rate,
+      bags,
+      amount
+    }
+  })
+}
+
+function sumItemsAmount(items: Array<{ amount: number }>): number {
+  return Number(items.reduce((sum, item) => sum + toNonNegativeNumber(item.amount, 0), 0).toFixed(2))
+}
+
 function sanitizeSalesBill<T extends {
   totalAmount?: unknown
   receivedAmount?: unknown
   balanceAmount?: unknown
   status?: unknown
-  salesItems?: Array<{ qty?: unknown; weight?: unknown; rate?: unknown; amount?: unknown }>
+  salesItems?: Array<{ qty?: unknown; weight?: unknown; rate?: unknown; amount?: unknown; bags?: unknown }>
+  transportBills?: Array<{
+    freightPerQt?: unknown
+    freightAmount?: unknown
+    advance?: unknown
+    toPay?: unknown
+    otherAmount?: unknown
+    insuranceAmount?: unknown
+  }>
 }>(bill: T): T {
   const safeTotalAmount = toNonNegativeNumber(bill.totalAmount, 0)
   const safeReceivedAmount = toNonNegativeNumber(bill.receivedAmount, 0)
   const safeBalanceAmount = Math.max(0, safeTotalAmount - safeReceivedAmount)
-  const safeStatus = safeBalanceAmount === 0 ? 'paid' : safeReceivedAmount > 0 ? 'partial' : 'unpaid'
+  const safeStatus = deriveStatus(safeBalanceAmount, safeReceivedAmount)
 
   return {
     ...bill,
@@ -102,38 +139,154 @@ function sanitizeSalesBill<T extends {
           ...item,
           qty: toNonNegativeNumber(item.qty ?? item.weight, 0),
           weight: toNonNegativeNumber(item.weight ?? item.qty, 0),
+          bags: Math.floor(toNonNegativeNumber(item.bags, 0)),
           rate: toNonNegativeNumber(item.rate, 0),
           amount: toNonNegativeNumber(item.amount, 0)
         }))
-      : bill.salesItems
+      : bill.salesItems,
+    transportBills: Array.isArray(bill.transportBills)
+      ? bill.transportBills.map((item) => ({
+          ...item,
+          freightPerQt: toNonNegativeNumber(item.freightPerQt, 0),
+          freightAmount: toNonNegativeNumber(item.freightAmount, 0),
+          advance: toNonNegativeNumber(item.advance, 0),
+          toPay: toNonNegativeNumber(item.toPay, 0),
+          otherAmount: toNonNegativeNumber(item.otherAmount, 0),
+          insuranceAmount: toNonNegativeNumber(item.insuranceAmount, 0)
+        }))
+      : bill.transportBills
   } as T
+}
+
+async function resolveSalesParty(input: {
+  companyId: string
+  partyId?: string
+  partyName?: string
+  partyAddress?: string
+  partyContact?: string
+}) {
+  const normalizedPartyId = normalizeId(input.partyId)
+  if (normalizedPartyId) {
+    const existingById = await prisma.party.findFirst({
+      where: {
+        id: normalizedPartyId,
+        companyId: input.companyId
+      }
+    })
+
+    if (!existingById) {
+      throw new Error('Selected party not found')
+    }
+
+    if (input.partyAddress !== undefined || input.partyContact !== undefined) {
+      return prisma.party.update({
+        where: { id: existingById.id },
+        data: {
+          address: input.partyAddress ?? existingById.address,
+          phone1: input.partyContact ?? existingById.phone1
+        }
+      })
+    }
+
+    return existingById
+  }
+
+  const normalizedPartyName = String(input.partyName || '').trim()
+  if (!normalizedPartyName) {
+    throw new Error('Party selection is required')
+  }
+
+  let party = await prisma.party.findFirst({
+    where: {
+      companyId: input.companyId,
+      name: normalizedPartyName
+    }
+  })
+
+  if (!party) {
+    party = await prisma.party.create({
+      data: {
+        companyId: input.companyId,
+        type: 'buyer',
+        name: normalizedPartyName,
+        address: input.partyAddress || null,
+        phone1: input.partyContact || null
+      }
+    })
+    return party
+  }
+
+  if (input.partyAddress !== undefined || input.partyContact !== undefined) {
+    party = await prisma.party.update({
+      where: { id: party.id },
+      data: {
+        address: input.partyAddress ?? party.address,
+        phone1: input.partyContact ?? party.phone1
+      }
+    })
+  }
+
+  return party
+}
+
+function normalizeTransportBillData(input?: z.infer<typeof transportBillSchema>) {
+  if (!input) return null
+
+  const payload = {
+    transportName: input.transportName?.trim() || null,
+    lorryNo: input.lorryNo?.trim() || null,
+    freightPerQt: toNonNegativeNumber(input.freightPerQt, 0),
+    freightAmount: toNonNegativeNumber(input.freightAmount, 0),
+    advance: toNonNegativeNumber(input.advance, 0),
+    toPay: toNonNegativeNumber(input.toPay, 0),
+    otherAmount: toNonNegativeNumber(input.otherAmount, 0),
+    insuranceAmount: toNonNegativeNumber(input.insuranceAmount, 0)
+  }
+
+  const hasData = Boolean(
+    payload.transportName ||
+      payload.lorryNo ||
+      payload.freightPerQt > 0 ||
+      payload.freightAmount > 0 ||
+      payload.advance > 0 ||
+      payload.toPay > 0 ||
+      payload.otherAmount > 0 ||
+      payload.insuranceAmount > 0
+  )
+
+  if (!hasData) return null
+  return payload
 }
 
 export async function POST(request: NextRequest) {
   try {
     const parsed = await parseJsonWithSchema(request, salesCreateSchema)
     if (!parsed.ok) return parsed.response
+
     const body = parsed.data
-    const {
-      companyId,
-      invoiceNo,
-      invoiceDate,
-      partyName,
-      partyAddress,
-      partyContact,
-      salesItems,
-      totalAmount
-    } = body
+    const companyId = normalizeId(body.companyId)
+
+    if (!companyId) {
+      return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
+    }
+
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
+    const normalizedItems = normalizeSalesItems(body.salesItems)
+    const invalidItem = normalizedItems.find((item) => item.weight <= 0 || item.rate <= 0 || !item.productId)
+    if (invalidItem) {
+      return NextResponse.json({ error: 'Each sales item must have product, weight > 0 and rate > 0' }, { status: 400 })
+    }
+
     const stockValidation = await validateStockBeforeSale(
       companyId,
-      salesItems.map((item) => ({
+      normalizedItems.map((item) => ({
         productId: item.productId,
-        weight: Number(item.weight) || 0
+        weight: item.weight
       }))
     )
+
     if (!stockValidation.isValid) {
       return NextResponse.json(
         {
@@ -145,93 +298,106 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const auth = getRequestAuthContext(request)
-    const userId = auth?.userId || 'system'
-
-    let party = await prisma.party.findFirst({
-      where: {
-        companyId,
-        name: partyName
-      }
+    const party = await resolveSalesParty({
+      companyId,
+      partyId: body.partyId,
+      partyName: body.partyName,
+      partyAddress: body.partyAddress,
+      partyContact: body.partyContact
     })
 
-    if (!party) {
-      party = await prisma.party.create({
-        data: {
-          companyId,
-          type: 'buyer',
-          name: partyName,
-          address: partyAddress || null,
-          phone1: partyContact || null
-        }
-      })
-    } else {
-      party = await prisma.party.update({
-        where: { id: party.id },
-        data: {
-          address: partyAddress || party.address,
-          phone1: partyContact || party.phone1
-        }
-      })
+    const transportData = normalizeTransportBillData(body.transportBill)
+    const itemsTotal = sumItemsAmount(normalizedItems)
+    const defaultTotalFromItems = Number(
+      (itemsTotal + toNonNegativeNumber(transportData?.otherAmount, 0) + toNonNegativeNumber(transportData?.insuranceAmount, 0)).toFixed(2)
+    )
+
+    const nextTotal = body.totalAmount !== undefined
+      ? toNonNegativeNumber(body.totalAmount, defaultTotalFromItems)
+      : defaultTotalFromItems
+
+    const nextReceived = body.receivedAmount !== undefined ? toNonNegativeNumber(body.receivedAmount, 0) : 0
+    if (nextReceived > nextTotal) {
+      return NextResponse.json({ error: 'Received amount cannot exceed total amount' }, { status: 400 })
     }
+
+    const nextBalance = body.balanceAmount !== undefined
+      ? toNonNegativeNumber(body.balanceAmount, Math.max(0, nextTotal - nextReceived))
+      : Math.max(0, nextTotal - nextReceived)
+
+    const nextStatus = String(body.status || deriveStatus(nextBalance, nextReceived)).toLowerCase()
+    const billDateValue = safeToDate(body.invoiceDate || body.billDate)
+    const billNo = normalizeBillNo(body.invoiceNo, body.billNo)
+
+    const auth = getRequestAuthContext(request)
+    const userId = auth?.userId || 'system'
 
     const createdSalesBill = await prisma.$transaction(async (tx) => {
       const salesBill = await tx.salesBill.create({
         data: {
           companyId,
-          billNo: invoiceNo || '1',
-          billDate: safeToDate(invoiceDate),
+          billNo,
+          billDate: billDateValue,
           partyId: party.id,
-          totalAmount: Number(totalAmount) || 0,
-          receivedAmount: 0,
-          balanceAmount: Number(totalAmount) || 0,
-          status: 'unpaid',
+          totalAmount: nextTotal,
+          receivedAmount: nextReceived,
+          balanceAmount: nextBalance,
+          status: nextStatus,
           createdBy: userId
         }
       })
 
-      for (const item of salesItems) {
-        if (!item.productId) {
-          throw new Error('productId is missing in sales item')
-        }
-
+      for (const item of normalizedItems) {
         await tx.salesItem.create({
           data: {
             salesBillId: salesBill.id,
             productId: item.productId,
-            weight: Number(item.weight) || 0,
-            bags: item.bags ? Number(item.bags) : null,
-            rate: Number(item.rate) || 0,
-            amount: Number(item.amount) || 0
+            weight: item.weight,
+            bags: item.bags,
+            rate: item.rate,
+            amount: item.amount
           }
         })
-      }
 
-      for (const item of salesItems) {
         await tx.stockLedger.create({
           data: {
             companyId,
-            entryDate: safeToDate(invoiceDate),
+            entryDate: billDateValue,
             productId: item.productId,
             type: 'sales',
-            qtyOut: Number(item.weight) || 0,
+            qtyOut: item.weight,
             refTable: 'sales_bills',
             refId: salesBill.id
           }
         })
       }
 
-      return salesBill
+      if (transportData) {
+        await tx.transportBill.create({
+          data: {
+            salesBillId: salesBill.id,
+            ...transportData
+          }
+        })
+      }
+
+      return tx.salesBill.findFirst({
+        where: { id: salesBill.id },
+        include: {
+          party: true,
+          salesItems: {
+            include: { product: true }
+          },
+          transportBills: true
+        }
+      })
     })
 
-    return NextResponse.json({ success: true, salesBill: createdSalesBill })
+    return NextResponse.json({ success: true, salesBill: createdSalesBill }, { status: 201 })
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'Internal server error'
-      },
-      { status: 500 }
-    )
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    const status = message.includes('not found') || message.includes('required') ? 400 : 500
+    return NextResponse.json({ error: message }, { status })
   }
 }
 
@@ -241,10 +407,13 @@ export async function GET(request: NextRequest) {
     const companyId = normalizeId(searchParams.get('companyId'))
     const billId = normalizeId(searchParams.get('billId'))
     const last = searchParams.get('last')
+    const dateFrom = searchParams.get('dateFrom')
+    const dateTo = searchParams.get('dateTo')
 
     if (!companyId) {
       return NextResponse.json({ error: 'Company ID is required' }, { status: 400 })
     }
+
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
@@ -285,16 +454,21 @@ export async function GET(request: NextRequest) {
     }
 
     const pagination = parsePaginationParams(searchParams, { defaultPageSize: 50, maxPageSize: 200 })
-    const whereClause = {
-      companyId,
-      ...(pagination.search
-        ? {
-            OR: [
-              { billNo: { contains: pagination.search } },
-              { status: { contains: pagination.search } }
-            ]
-          }
-        : {})
+
+    const whereClause: {
+      companyId: string
+      billDate?: { gte?: Date; lte?: Date }
+      OR?: Array<{ billNo: { contains: string } } | { status: { contains: string } }>
+    } = { companyId }
+
+    if (dateFrom || dateTo) {
+      whereClause.billDate = {}
+      if (dateFrom) whereClause.billDate.gte = safeToDate(dateFrom)
+      if (dateTo) whereClause.billDate.lte = safeToDate(`${dateTo}T23:59:59.999`)
+    }
+
+    if (pagination.search) {
+      whereClause.OR = [{ billNo: { contains: pagination.search } }, { status: { contains: pagination.search } }]
     }
 
     const [salesBills, total] = await Promise.all([
@@ -306,7 +480,8 @@ export async function GET(request: NextRequest) {
             include: {
               product: true
             }
-          }
+          },
+          transportBills: true
         },
         orderBy: { createdAt: 'desc' },
         ...(pagination.enabled ? { skip: pagination.skip, take: pagination.pageSize } : {})
@@ -333,8 +508,8 @@ export async function PUT(request: NextRequest) {
   try {
     const parsed = await parseJsonWithSchema(request, salesUpdateSchema)
     if (!parsed.ok) return parsed.response
-    const body = parsed.data
 
+    const body = parsed.data
     const companyId = normalizeId(body.companyId)
     const billId = normalizeId(body.id || new URL(request.url).searchParams.get('billId'))
 
@@ -351,7 +526,9 @@ export async function PUT(request: NextRequest) {
         companyId
       },
       include: {
-        salesItems: true
+        salesItems: true,
+        transportBills: true,
+        party: true
       }
     })
 
@@ -359,60 +536,77 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Sales bill not found' }, { status: 404 })
     }
 
-    let partyId = existing.partyId
-    const requestedParty = normalizeId(body.partyName)
-    if (requestedParty) {
-      const party = await prisma.party.findFirst({
-        where: {
-          id: requestedParty,
-          companyId
-        }
-      })
-      if (party) {
-        partyId = party.id
-        if (body.partyAddress !== undefined || body.partyContact !== undefined) {
-          await prisma.party.update({
-            where: { id: party.id },
-            data: {
-              address: body.partyAddress ?? party.address,
-              phone1: body.partyContact ?? party.phone1
-            }
-          })
-        }
+    const hasSalesItems = Array.isArray(body.salesItems) && body.salesItems.length > 0
+    const normalizedItems = hasSalesItems ? normalizeSalesItems(body.salesItems) : null
+
+    if (normalizedItems) {
+      const invalidItem = normalizedItems.find((item) => item.weight <= 0 || item.rate <= 0 || !item.productId)
+      if (invalidItem) {
+        return NextResponse.json({ error: 'Each sales item must have product, weight > 0 and rate > 0' }, { status: 400 })
       }
     }
 
-    const nextBillDate = body.invoiceDate ? safeToDate(body.invoiceDate) : existing.billDate
-    const nextTotal = body.totalAmount !== undefined ? toNonNegativeNumber(body.totalAmount, existing.totalAmount) : existing.totalAmount
-    const nextReceived = body.receivedAmount !== undefined ? toNonNegativeNumber(body.receivedAmount, existing.receivedAmount) : existing.receivedAmount
+    const transportData = normalizeTransportBillData(body.transportBill)
+
+    const hasPartyInput =
+      Boolean(normalizeId(body.partyId)) ||
+      Boolean(String(body.partyName || '').trim()) ||
+      body.partyAddress !== undefined ||
+      body.partyContact !== undefined
+
+    const party = hasPartyInput
+      ? await resolveSalesParty({
+          companyId,
+          partyId: body.partyId,
+          partyName: body.partyName,
+          partyAddress: body.partyAddress,
+          partyContact: body.partyContact
+        })
+      : existing.party
+
+    const itemsTotal = normalizedItems ? sumItemsAmount(normalizedItems) : toNonNegativeNumber(existing.totalAmount, 0)
+    const defaultTotalFromItems = Number(
+      (itemsTotal + toNonNegativeNumber(transportData?.otherAmount, 0) + toNonNegativeNumber(transportData?.insuranceAmount, 0)).toFixed(2)
+    )
+
+    const nextTotal = body.totalAmount !== undefined
+      ? toNonNegativeNumber(body.totalAmount, defaultTotalFromItems)
+      : normalizedItems
+        ? defaultTotalFromItems
+        : toNonNegativeNumber(existing.totalAmount, 0)
+
+    const nextReceived = body.receivedAmount !== undefined
+      ? toNonNegativeNumber(body.receivedAmount, toNonNegativeNumber(existing.receivedAmount, 0))
+      : toNonNegativeNumber(existing.receivedAmount, 0)
+
+    if (nextReceived > nextTotal) {
+      return NextResponse.json({ error: 'Received amount cannot exceed total amount' }, { status: 400 })
+    }
+
     const nextBalance = body.balanceAmount !== undefined
-      ? toNonNegativeNumber(body.balanceAmount, existing.balanceAmount)
+      ? toNonNegativeNumber(body.balanceAmount, Math.max(0, nextTotal - nextReceived))
       : Math.max(0, nextTotal - nextReceived)
-    const nextStatus = body.status || (nextBalance === 0 ? 'paid' : nextReceived > 0 ? 'partial' : 'unpaid')
+
+    const nextStatus = String(body.status || deriveStatus(nextBalance, nextReceived)).toLowerCase()
+    const nextBillDate = body.invoiceDate || body.billDate ? safeToDate(body.invoiceDate || body.billDate) : existing.billDate
+    const hasBillNoInput = String(body.invoiceNo || '').trim() || String(body.billNo || '').trim()
+    const nextBillNo = hasBillNoInput ? normalizeBillNo(body.invoiceNo, body.billNo) : existing.billNo
 
     const updated = await prisma.$transaction(async (tx) => {
       const bill = await tx.salesBill.update({
         where: { id: existing.id },
         data: {
-          billNo: body.invoiceNo?.trim() || existing.billNo,
+          billNo: nextBillNo,
           billDate: nextBillDate,
-          partyId,
+          partyId: party.id,
           totalAmount: nextTotal,
           receivedAmount: nextReceived,
           balanceAmount: nextBalance,
           status: nextStatus
-        },
-        include: {
-          party: true,
-          salesItems: {
-            include: {
-              product: true
-            }
-          }
         }
       })
 
-      if (Array.isArray(body.salesItems) && body.salesItems.length > 0) {
+      if (normalizedItems) {
         await tx.salesItem.deleteMany({ where: { salesBillId: existing.id } })
         await tx.stockLedger.deleteMany({
           where: {
@@ -422,28 +616,25 @@ export async function PUT(request: NextRequest) {
           }
         })
 
-        for (const item of body.salesItems) {
-          const normalizedWeight = toNonNegativeNumber(
-            item.weight ?? item.totalWeight ?? item.qty ?? 0,
-            0
-          )
+        for (const item of normalizedItems) {
           await tx.salesItem.create({
             data: {
               salesBillId: existing.id,
               productId: item.productId,
-              weight: normalizedWeight,
-              rate: toNonNegativeNumber(item.rate, 0),
-              amount: toNonNegativeNumber(item.amount, 0),
-              bags: item.bags !== undefined ? Math.floor(toNonNegativeNumber(item.bags, 0)) : null
+              weight: item.weight,
+              bags: item.bags,
+              rate: item.rate,
+              amount: item.amount
             }
           })
+
           await tx.stockLedger.create({
             data: {
               companyId,
               entryDate: nextBillDate,
               productId: item.productId,
               type: 'sales',
-              qtyOut: normalizedWeight,
+              qtyOut: item.weight,
               refTable: 'sales_bills',
               refId: existing.id
             }
@@ -451,69 +642,49 @@ export async function PUT(request: NextRequest) {
         }
       }
 
-      if (body.transportBill) {
-        const transportName = body.transportBill.transportName?.trim() || null
-        const lorryNo = body.transportBill.lorryNo?.trim() || null
-        const freightPerQt = toNonNegativeNumber(body.transportBill.freightPerQt, 0)
-        const freightAmount = toNonNegativeNumber(body.transportBill.freightAmount, 0)
-        const advance = toNonNegativeNumber(body.transportBill.advance, 0)
-        const toPay = toNonNegativeNumber(body.transportBill.toPay, 0)
+      const existingTransportBill = await tx.transportBill.findFirst({
+        where: { salesBillId: existing.id }
+      })
 
-        const hasTransportData = Boolean(
-          transportName ||
-          lorryNo ||
-          freightPerQt > 0 ||
-          freightAmount > 0 ||
-          advance > 0 ||
-          toPay > 0
-        )
-
-        const existingTransportBill = await tx.transportBill.findFirst({
-          where: { salesBillId: existing.id }
-        })
-
-        if (hasTransportData) {
-          if (existingTransportBill) {
-            await tx.transportBill.update({
-              where: { id: existingTransportBill.id },
-              data: {
-                transportName,
-                lorryNo,
-                freightPerQt,
-                freightAmount,
-                advance,
-                toPay
-              }
-            })
-          } else {
-            await tx.transportBill.create({
-              data: {
-                salesBillId: existing.id,
-                transportName,
-                lorryNo,
-                freightPerQt,
-                freightAmount,
-                advance,
-                toPay
-              }
-            })
-          }
-        } else if (existingTransportBill) {
-          await tx.transportBill.delete({
-            where: { id: existingTransportBill.id }
+      if (transportData) {
+        if (existingTransportBill) {
+          await tx.transportBill.update({
+            where: { id: existingTransportBill.id },
+            data: transportData
+          })
+        } else {
+          await tx.transportBill.create({
+            data: {
+              salesBillId: existing.id,
+              ...transportData
+            }
           })
         }
+      } else if (body.transportBill && existingTransportBill) {
+        await tx.transportBill.delete({
+          where: { id: existingTransportBill.id }
+        })
       }
 
-      return bill
+      return tx.salesBill.findFirst({
+        where: { id: bill.id },
+        include: {
+          party: true,
+          salesItems: {
+            include: {
+              product: true
+            }
+          },
+          transportBills: true
+        }
+      })
     })
 
     return NextResponse.json({ success: true, salesBill: updated })
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 }
-    )
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    const status = message.includes('not found') || message.includes('required') ? 400 : 500
+    return NextResponse.json({ error: message }, { status })
   }
 }
 

@@ -81,11 +81,34 @@ function PurchaseEditPageContent() {
   const [paidAmount, setPaidAmount] = useState('')
   const [balance, setBalance] = useState('')
   const [billNumber, setBillNumber] = useState('')
+  const [paidAmountError, setPaidAmountError] = useState('')
   const toNonNegative = (value: string) => {
     if (value === '') return ''
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return ''
     return String(Math.max(0, parsed))
+  }
+
+  const handlePaidAmountChange = (value: string) => {
+    const normalized = toNonNegative(value)
+    if (normalized === '') {
+      setPaidAmount('')
+      setPaidAmountError('')
+      return
+    }
+
+    const nextPaid = Number(normalized)
+    const maxPayable = Number(payableAmount || 0)
+    const hasPayable = payableAmount !== ''
+
+    if (hasPayable && nextPaid > maxPayable) {
+      setPaidAmount(String(maxPayable))
+      setPaidAmountError('Paid amount cannot be greater than payable amount')
+      return
+    }
+
+    setPaidAmount(normalized)
+    setPaidAmountError('')
   }
 
   const parseApiJson = async <T,>(response: Response, fallback: T): Promise<T> => {
@@ -208,13 +231,22 @@ function PurchaseEditPageContent() {
 
   // Calculate balance when payable or paid changes
   useEffect(() => {
-    if (payableAmount && paidAmount) {
-      const payable = parseFloat(payableAmount) || 0
-      const paid = parseFloat(paidAmount) || 0
-      setBalance(Math.max(0, payable - paid).toString())
-    } else {
-      setBalance('')
+    const payable = parseFloat(payableAmount) || 0
+    const paid = parseFloat(paidAmount) || 0
+
+    if (payableAmount !== '' && paidAmount && paid > payable) {
+      setPaidAmount(String(payable))
+      setPaidAmountError('Paid amount cannot be greater than payable amount')
+      setBalance('0')
+      return
     }
+
+    setPaidAmountError('')
+    if (payableAmount && paidAmount) {
+      setBalance(Math.max(0, payable - paid).toString())
+      return
+    }
+    setBalance('')
   }, [payableAmount, paidAmount])
 
   const handleFarmerChange = (farmerId: string) => {
@@ -233,6 +265,11 @@ function PurchaseEditPageContent() {
     // Basic validation
     if (!farmerName || !selectedProduct || !weight || !rate || !billNumber) {
       alert('Please fill all required fields')
+      return
+    }
+
+    if (paidAmountError) {
+      alert('Please correct paid amount before submitting')
       return
     }
 
@@ -499,9 +536,13 @@ function PurchaseEditPageContent() {
                       min="0"
                       step="0.01"
                       value={paidAmount}
-                      onChange={(e) => setPaidAmount(toNonNegative(e.target.value))}
+                      onChange={(e) => handlePaidAmountChange(e.target.value)}
                       placeholder="Enter paid amount"
+                      className={paidAmountError ? 'border-red-500 focus-visible:ring-red-500' : ''}
                     />
+                    {paidAmountError ? (
+                      <p className="mt-1 text-right text-sm text-red-600">{paidAmountError}</p>
+                    ) : null}
                   </div>
 
                   {/* Balance */}

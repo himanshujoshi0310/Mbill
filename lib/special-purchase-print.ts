@@ -66,6 +66,12 @@ function toNumber(value: unknown, fallback = 0): number {
   return parsed
 }
 
+function toDateInput(value: unknown): string | Date | null | undefined {
+  if (value instanceof Date) return value
+  if (typeof value === 'string') return value
+  return null
+}
+
 export function mapSpecialPurchaseBillToPrintData(bill: SpecialPurchaseBillLike): SpecialPurchaseBillPrintData {
   const item = Array.isArray(bill?.specialPurchaseItems) ? bill.specialPurchaseItems[0] : null
 
@@ -73,7 +79,7 @@ export function mapSpecialPurchaseBillToPrintData(bill: SpecialPurchaseBillLike)
     id: String(bill?.id || ''),
     invoiceNo: String(bill?.supplierInvoiceNo || ''),
     billDateIso: String(bill?.billDate || ''),
-    billDateLabel: formatDisplayDate(bill?.billDate),
+    billDateLabel: formatDisplayDate(toDateInput(bill?.billDate)),
     printDateLabel: formatDisplayDate(new Date()),
     companyName: String(bill?.company?.name || ''),
     companyAddress: String(bill?.company?.address || ''),

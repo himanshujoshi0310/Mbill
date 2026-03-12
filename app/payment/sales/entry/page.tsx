@@ -263,6 +263,14 @@ function SalesPaymentEntryPageContent() {
   }, [salesBills, billId, selectedPartyName, selectedBill])
 
   useEffect(() => {
+    if (selectedPartyName || partyGroups.length === 0) return
+    const firstGroup = partyGroups[0]
+    if (!firstGroup) return
+    setSelectedPartyName(firstGroup.partyName)
+    setSelectedBill(firstGroup.bills[0]?.id || '')
+  }, [partyGroups, selectedPartyName])
+
+  useEffect(() => {
     if (!selectedPartyName) {
       setSelectedBill('')
       return

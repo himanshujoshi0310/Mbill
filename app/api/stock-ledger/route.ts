@@ -58,7 +58,62 @@ export async function GET(request: NextRequest) {
     const denied = await ensureCompanyAccess(request, companyId)
     if (denied) return denied
 
-    let whereClause: any = { companyId }
+    // Auto-heal legacy records: older sales bills may exist without stock ledger rows.
+    const [salesBills, existingSalesEntries] = await Promise.all([
+      prisma.salesBill.findMany({
+        where: { companyId },
+        select: {
+          id: true,
+          billDate: true,
+          salesItems: {
+            select: {
+              productId: true,
+              weight: true
+            }
+          }
+        }
+      }),
+      prisma.stockLedger.findMany({
+        where: {
+          companyId,
+          refTable: 'sales_bills'
+        },
+        select: {
+          refId: true,
+          productId: true
+        }
+      })
+    ])
+
+    const existingEntrySet = new Set(existingSalesEntries.map((entry) => `${entry.refId}:${entry.productId}`))
+    const missingLedgerEntries = salesBills
+      .flatMap((bill) =>
+        bill.salesItems
+          .filter((item) => Number(item.weight || 0) > 0)
+          .filter((item) => !existingEntrySet.has(`${bill.id}:${item.productId}`))
+          .map((item) => ({
+            companyId,
+            entryDate: bill.billDate,
+            productId: item.productId,
+            type: 'sales',
+            qtyIn: 0,
+            qtyOut: Number(item.weight || 0),
+            refTable: 'sales_bills',
+            refId: bill.id
+          }))
+      )
+
+    if (missingLedgerEntries.length > 0) {
+      await prisma.$transaction(
+        missingLedgerEntries.map((entry) =>
+          prisma.stockLedger.create({
+            data: entry
+          })
+        )
+      )
+    }
+
+    const whereClause: any = { companyId }
     if (productId) {
       whereClause.productId = productId
     }
