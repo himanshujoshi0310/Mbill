@@ -6,7 +6,7 @@
     "dev": "node scripts/dev-safe.mjs",
     "dev:clean": "node scripts/dev-clean.mjs",
     "dev:stable": "next dev --webpack",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
     "test:security": "tsx --test tests/security-upgrade.test.ts",
