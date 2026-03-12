@@ -159,8 +159,8 @@ Then open the same deployed URL from all devices. Super Admin changes will persi
 
 ## Real-Time Sync Behavior
 
-- Sidebar privileges auto-refresh (default every 20s)
-- Top user/company context auto-refresh (default every 20s)
+- Sidebar privileges auto-refresh (default every 60s)
+- Top user/company context auto-refresh (default every 60s)
 - Configure refresh interval with `NEXT_PUBLIC_LIVE_SYNC_MS`
 
 ## Developer Commands
@@ -190,9 +190,8 @@ npm run prisma:dbpush:postgres
 Another `next dev` process is already running.
 
 ```bash
-pkill -f "next dev"
-rm -f .next/dev/lock
-npm run dev
+# Cross-platform reset + restart
+npm run dev:clean
 ```
 
 ### 2) Turbopack compaction / corrupted cache messages
@@ -200,8 +199,7 @@ npm run dev
 Clear build cache and restart:
 
 ```bash
-rm -rf .next
-npm run dev
+npm run dev:clean
 ```
 
 ### 3) `Runtime AbortError: The user aborted a request`

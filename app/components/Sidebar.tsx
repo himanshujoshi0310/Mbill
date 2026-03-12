@@ -1,12 +1,12 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { ChevronDown, ChevronRight, LayoutDashboard, ShoppingCart, TrendingUp, Menu, X, Package, CreditCard, FileText, Settings, Lock } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight, LayoutDashboard, ShoppingCart, TrendingUp, Menu, X, Package, CreditCard, FileText, Settings, Lock, type LucideIcon } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 
 type MenuPermissionModule =
   | 'MASTER_PRODUCTS'
@@ -35,7 +35,7 @@ type MenuChild = {
 type MenuItem = {
   title: string
   href?: string
-  icon: any
+  icon: LucideIcon
   children: MenuChild[]
 }
 
@@ -115,11 +115,22 @@ interface SidebarProps {
 
 export default function Sidebar({ companyId, isCollapsed = false, onToggleCollapse }: SidebarProps) {
   const pathname = usePathname()
+  const router = useRouter()
   const [openItems, setOpenItems] = useState<string[]>([])
   const [allowedModules, setAllowedModules] = useState<Set<MenuPermissionModule> | null>(null)
-  const permissionsRefreshMs = Number(process.env.NEXT_PUBLIC_LIVE_SYNC_MS || 20000)
+  const permissionsRefreshMs = Math.max(30000, Number(process.env.NEXT_PUBLIC_LIVE_SYNC_MS || 60000))
 
-  const withCompany = (href?: string) => href || '/main/dashboard'
+  const withCompany = useCallback((href?: string) => {
+    const base = href || '/main/dashboard'
+    if (!companyId || base.includes('companyId=') || base.includes('companyIds=')) return base
+
+    const [pathWithQuery, hashPart = ''] = base.split('#')
+    const [pathnamePart, queryPart = ''] = pathWithQuery.split('?')
+    const params = new URLSearchParams(queryPart)
+    params.set('companyId', companyId)
+    const query = params.toString()
+    return `${pathnamePart}${query ? `?${query}` : ''}${hashPart ? `#${hashPart}` : ''}`
+  }, [companyId])
 
   const syncActiveCompany = () => {
     if (!companyId) return
@@ -170,11 +181,28 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
     }
   }, [companyId, permissionsRefreshMs])
 
-  const hasChildAccess = (child: MenuChild) => {
+  const hasChildAccess = useCallback((child: MenuChild) => {
     if (!child.permissionModule) return true
     if (!allowedModules) return true
     return allowedModules.has(child.permissionModule)
-  }
+  }, [allowedModules])
+
+  useEffect(() => {
+    const routeSet = new Set<string>()
+    for (const item of menuItems) {
+      if (item.href) routeSet.add(withCompany(item.href))
+      for (const child of item.children) {
+        if (hasChildAccess(child)) {
+          routeSet.add(withCompany(child.href))
+        }
+      }
+    }
+
+    routeSet.forEach((href) => {
+      if (!href) return
+      router.prefetch(href)
+    })
+  }, [router, hasChildAccess, withCompany])
 
   const toggleItem = (title: string) => {
     setOpenItems(prev =>
@@ -185,12 +213,13 @@ export default function Sidebar({ companyId, isCollapsed = false, onToggleCollap
   }
 
   const isActive = (href: string) => {
-    return pathname === href
+    const cleanHref = href.split('?')[0]
+    return pathname === cleanHref
   }
 
-  const isParentActive = (item: any) => {
+  const isParentActive = (item: MenuItem) => {
     if (item.href && isActive(item.href)) return true
-    return item.children?.some((child: any) => isActive(child.href))
+    return item.children?.some((child) => isActive(child.href))
   }
 
   return (

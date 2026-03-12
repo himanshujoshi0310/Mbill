@@ -13,6 +13,10 @@ export default function RootLayout({
 }>) {
   // Add global fetch interceptor for authentication with automatic token refresh
   useEffect(() => {
+    const apiTimeoutMs = Math.max(
+      5000,
+      Math.min(60000, Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS || 12000))
+    )
     const originalFetch = window.fetch;
     const abortRejectionHandler = (event: PromiseRejectionEvent) => {
       if (isAbortError(event.reason)) {
@@ -85,19 +89,41 @@ export default function RootLayout({
         return originalFetch(...args);
       }
 
-      const safeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const safeFetch = async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+        useTimeout: boolean = false
+      ): Promise<Response> => {
+        let timeoutId: ReturnType<typeof setTimeout> | null = null
+        let didTimeout = false
+        let controller: AbortController | null = null
+        const finalInit = { ...(init || {}) }
+
+        if (useTimeout && !finalInit.signal) {
+          controller = new AbortController()
+          finalInit.signal = controller.signal
+          timeoutId = setTimeout(() => {
+            didTimeout = true
+            controller?.abort('RequestTimeout')
+          }, apiTimeoutMs)
+        }
+
         try {
-          return await originalFetch(input, init)
+          return await originalFetch(input, finalInit)
         } catch (error) {
           if (isAbortError(error)) {
-            return new Response(JSON.stringify({ aborted: true }), {
-              status: 499,
+            return new Response(JSON.stringify(didTimeout ? { timedOut: true } : { aborted: true }), {
+              status: didTimeout ? 504 : 499,
               headers: {
                 'Content-Type': 'application/json'
               }
             })
           }
           throw error
+        } finally {
+          if (timeoutId) {
+            clearTimeout(timeoutId)
+          }
         }
       }
 
@@ -114,7 +140,7 @@ export default function RootLayout({
       }
       
       // Try API call first (cookies are sent automatically with HttpOnly)
-      let response = await safeFetch(url, requestInit);
+      let response = await safeFetch(url, requestInit, isInternalApi);
 
       // Preserve /api/super-admin/auth 401 to show in-page login errors.
       if (response.status === 401 && isSuperAdminApi && isSuperAdminAuthEndpoint) {
@@ -127,7 +153,7 @@ export default function RootLayout({
         
         if (refreshed) {
           // Retry the original request with new token
-          response = await safeFetch(url, requestInit);
+          response = await safeFetch(url, requestInit, isInternalApi);
           if (response.status !== 401) {
             return response;
           }

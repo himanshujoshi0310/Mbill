@@ -16,7 +16,7 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
   const [currentUser, setCurrentUser] = useState<string | null>(null)
   const [resolvedCompanyId, setResolvedCompanyId] = useState(companyId)
   const [currentCompanyName, setCurrentCompanyName] = useState<string | null>(null)
-  const liveSyncMs = Number(process.env.NEXT_PUBLIC_LIVE_SYNC_MS || 20000)
+  const liveSyncMs = Math.max(30000, Number(process.env.NEXT_PUBLIC_LIVE_SYNC_MS || 60000))
   const router = useRouter()
 
   useEffect(() => {
@@ -51,13 +51,25 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
     }
     
     void checkAuth()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void checkAuth()
+      }
+    }
+    const onFocus = () => {
+      void checkAuth()
+    }
     timerId = setInterval(() => {
       void checkAuth()
     }, liveSyncMs)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onFocus)
 
     return () => {
       cancelled = true
       if (timerId) clearInterval(timerId)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onFocus)
     }
   }, [router, liveSyncMs])
 
@@ -69,10 +81,17 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
 
       let targetCompanyId = companyId?.trim() || ''
       let targetCompanyName = ''
+      let companiesPayload: unknown = null
 
       try {
-        const activeCompanyResponse = await fetch('/api/auth/company', { cache: 'no-store' })
-        if (!cancelled && activeCompanyResponse.ok) {
+        const [activeCompanyResponse, companiesResponse] = await Promise.all([
+          fetch('/api/auth/company', { cache: 'no-store' }),
+          fetch('/api/companies', { cache: 'no-store' })
+        ])
+
+        if (cancelled) return
+
+        if (activeCompanyResponse.ok) {
           const activeData = await activeCompanyResponse.json().catch(() => null)
           const activeCompany = activeData?.company
           if (activeCompany?.id) {
@@ -81,6 +100,10 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
               targetCompanyName = String(activeCompany.name || '')
             }
           }
+        }
+
+        if (companiesResponse.ok) {
+          companiesPayload = await companiesResponse.json().catch(() => [])
         }
       } catch (error) {
         if (cancelled || isAbortError(error)) return
@@ -92,39 +115,37 @@ export default function DashboardLayout({ children, companyId }: DashboardLayout
         return
       }
 
-      try {
-        const response = await fetch('/api/companies', { cache: 'no-store' })
-        if (cancelled) return
-        if (!response.ok) {
-          setResolvedCompanyId(targetCompanyId)
-          setCurrentCompanyName(targetCompanyName || targetCompanyId)
-          return
-        }
-        const companies = await response.json()
-        if (cancelled) return
-        if (!Array.isArray(companies)) {
-          setResolvedCompanyId(targetCompanyId)
-          setCurrentCompanyName(targetCompanyName || targetCompanyId)
-          return
-        }
-        const currentCompany = companies.find((row) => String(row?.id) === targetCompanyId)
-        setResolvedCompanyId(targetCompanyId)
-        setCurrentCompanyName(targetCompanyName || currentCompany?.name || targetCompanyId)
-      } catch (error) {
-        if (cancelled || isAbortError(error)) return
+      if (cancelled) return
+      if (!Array.isArray(companiesPayload)) {
         setResolvedCompanyId(targetCompanyId)
         setCurrentCompanyName(targetCompanyName || targetCompanyId)
+        return
       }
+      const currentCompany = companiesPayload.find((row) => String(row?.id) === targetCompanyId)
+      setResolvedCompanyId(targetCompanyId)
+      setCurrentCompanyName(targetCompanyName || currentCompany?.name || targetCompanyId)
     }
 
     void loadCompanyContext()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void loadCompanyContext()
+      }
+    }
+    const onFocus = () => {
+      void loadCompanyContext()
+    }
     timerId = setInterval(() => {
       void loadCompanyContext()
     }, liveSyncMs)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onFocus)
 
     return () => {
       cancelled = true
       if (timerId) clearInterval(timerId)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onFocus)
     }
   }, [companyId, liveSyncMs])
 

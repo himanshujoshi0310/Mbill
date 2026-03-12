@@ -9,6 +9,18 @@ function getCompanyIdFromCookie(): string {
   return value || ''
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number = 12000): Promise<Response> {
+  if (init.signal) return fetch(url, init)
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort('RequestTimeout'), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 export function getCompanyIdFromSearch(search: string): string {
   const params = new URLSearchParams(search)
   const companyId = params.get('companyId')?.trim()
@@ -30,7 +42,8 @@ export async function resolveCompanyId(search: string): Promise<string> {
   if (fromSearch) return fromSearch
 
   try {
-    const activeCompanyResponse = await fetch('/api/auth/company', { cache: 'no-store' })
+    const timeoutMs = Math.max(5000, Math.min(60000, Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS || 12000)))
+    const activeCompanyResponse = await fetchWithTimeout('/api/auth/company', { cache: 'no-store' }, timeoutMs)
     if (activeCompanyResponse.ok) {
       const activeData = await activeCompanyResponse.json().catch(() => null)
       const activeCompanyId = activeData?.company?.id
@@ -39,7 +52,7 @@ export async function resolveCompanyId(search: string): Promise<string> {
       }
     }
 
-    const response = await fetch('/api/auth/me', { cache: 'no-store' })
+    const response = await fetchWithTimeout('/api/auth/me', { cache: 'no-store' }, timeoutMs)
     if (!response.ok) return ''
 
     const data = await response.json()

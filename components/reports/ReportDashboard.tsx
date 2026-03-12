@@ -303,14 +303,15 @@ export default function ReportDashboard({
         setCompanies(rows)
 
         const availableIds = new Set(rows.map((row) => row.id))
-        const preferredId =
-          initialCompanyId && availableIds.has(initialCompanyId)
-            ? initialCompanyId
-            : selectedCompanyId && availableIds.has(selectedCompanyId)
-              ? selectedCompanyId
-              : rows[0]?.id || ''
-
-        setSelectedCompanyId(preferredId)
+        setSelectedCompanyId((previous) => {
+          if (initialCompanyId && availableIds.has(initialCompanyId)) {
+            return initialCompanyId
+          }
+          if (previous && availableIds.has(previous)) {
+            return previous
+          }
+          return rows[0]?.id || ''
+        })
       } catch (error) {
         if (!cancelled) {
           const message = error instanceof Error ? error.message : 'Failed to load companies'
@@ -329,7 +330,7 @@ export default function ReportDashboard({
     return () => {
       cancelled = true
     }
-  }, [initialCompanyId, selectedCompanyId])
+  }, [initialCompanyId])
 
   const generateReport = useCallback(async () => {
     if (!dateFrom || !dateTo) {
